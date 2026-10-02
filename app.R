@@ -50,6 +50,12 @@ has_writexl <- requireNamespace("writexl", quietly = TRUE)
 # doesn't get the interactive globe rather than failing to start.
 has_plotly <- requireNamespace("plotly", quietly = TRUE)
 
+# ---- End-of-line chart labels (ggrepel) -- same defensive pattern as
+# plotly above: requireNamespace only, so a server without ggrepel
+# installed just falls back to a plain legend instead of failing to
+# start. Used by the trend-chart end-of-line labeling improvement.
+has_ggrepel <- requireNamespace("ggrepel", quietly = TRUE)
+
 # ---- World map (Phase 1 global geography -- for non-US facilities and
 # projects) ----
 # NOT a base/commonly-pre-installed package like maps -- if missing,
@@ -191,6 +197,65 @@ settings_eu              <- if (has_eu_data) readRDS(file.path(eu_data_dir, "set
 
 sector_list_eu_official <- if (has_eu_data) settings_eu$sector_list_official else character(0)
 sector_bucket_list_eu   <- if (has_eu_data) settings_eu$sector_bucket_list else character(0)
+
+# ---- E-PRTR Annex I code -> human-readable label (per direct request)
+# --------------------------------------------------------------------
+# The model's own "sector bucket" grouping is keyed on raw E-PRTR
+# Annex I activity codes (e.g. "1(a)", "3(c)(i)") rather than
+# descriptive names -- correct data, just unreadable out of context.
+# This translates a code to a readable label for DISPLAY ONLY; the
+# underlying code is always kept as the actual input value/filter key,
+# so nothing about sector matching, benchmarking, or the forecast
+# model changes. Falls back gracefully (category-level name, then the
+# raw code itself) for any sub-code not in the explicit table below,
+# including malformed ones (e.g. a stray "3/nl/iii)") that don't
+# cleanly parse.
+eu_sector_category_names <- c(
+  "1" = "Energy sector",
+  "2" = "Production and processing of metals",
+  "3" = "Mineral industry",
+  "4" = "Chemical industry",
+  "5" = "Waste and waste water management",
+  "6" = "Paper, pulp, wood and timber production",
+  "7" = "Intensive livestock production and aquaculture",
+  "8" = "Food and beverage production",
+  "9" = "Other activities"
+)
+eu_sector_subcategory_names <- c(
+  "1a" = "Refineries of mineral oil and gas",
+  "1b" = "Installations for gasification and liquefaction of coal or other fuels",
+  "1c" = "Thermal power stations and other combustion installations",
+  "1d" = "Coke ovens",
+  "1e" = "Coal rolling mills",
+  "1f" = "Installations for manufacture of coal products and solid smokeless fuel",
+  "2a" = "Metal ore roasting or sintering installations",
+  "2b" = "Installations for production of pig iron or steel",
+  "2f" = "Installations for surface treatment of metals and plastics using electrolytic or chemical processes",
+  "3a" = "Underground mining and related operations",
+  "3b" = "Opencast mining and quarrying"
+)
+eu_sector_code_label <- function(code) {
+  if (is.null(code) || is.na(code) || !nzchar(code)) return(code)
+  m <- regmatches(code, regexec("^([0-9]+)\\D*([a-zA-Z])", code))[[1]]
+  if (length(m) < 3) return(code)
+  cat_num <- m[2]; sub_letter <- tolower(m[3])
+  key <- paste0(cat_num, sub_letter)
+  if (key %in% names(eu_sector_subcategory_names)) {
+    eu_sector_subcategory_names[[key]]
+  } else if (cat_num %in% names(eu_sector_category_names)) {
+    eu_sector_category_names[[cat_num]]
+  } else {
+    code
+  }
+}
+# Named-vector helper for selectInput(choices=...): shows the friendly
+# label but keeps the raw code as the actual value, so every reactive
+# reading input$eu_cp_sector / input$eu_sector_bucket_select still
+# gets the same code as before -- only what's displayed changes.
+eu_sector_bucket_choices <- function(codes) {
+  codes <- unique(codes)
+  setNames(codes, vapply(codes, eu_sector_code_label, character(1)))
+}
 # as.character() here is load-bearing, not decorative: the pipeline's
 # country_list = sort(unique(eu_panel_filtered$country)) does NOT wrap
 # with as.character() the way sector_bucket_list does one line above
@@ -261,45 +326,59 @@ africa_company_choices   <- if (has_africa_data) setNames(company_lookup_africa$
 
 # ---- Australia real company data (NGER registered corporations) --
 # OPTIONAL, same graceful-degradation pattern as Africa/Asia/EU.
-# Genuinely no future_pred_australia.rds (single-year source, no
-# forecast model) AND no hist_by_sector_australia.rds (no sector
-# column exists in this source at all -- confirmed by direct
-# inspection, not a gap left by mistake). settings_australia$
-# has_sector_data and $has_scope3 are explicit flags the app checks
-# before offering any feature that would need either. ----
+# NOW a genuine 3-year panel (2021-22, 2022-23, 2023-24), joined
+# across years via a stable entity_key (ABN/ACN) since company names
+# drift between years for 11 companies. future_pred_australia.rds NOW
+# EXISTS: a per-company simple linear forecast (Chile's approach --
+# lm() on up to 3 points, floored at zero -- not a mixed-effects panel
+# model, since 3 years/company is far too few groups for that), Scope
+# 1 only. hist_by_sector_australia.rds carries the externally-
+# researched GICS Sector mapping (australia_gics_sector_mapping.csv,
+# hand-researched, not guessed from the company name) since NGER's own
+# published table has no industry classification column at all.
+# settings_australia$has_forecast/$has_sector_data are TRUE now;
+# $has_scope3 stays FALSE -- NGER doesn't mandate Scope 3 reporting
+# for anyone, none of this bears on that gap. ----
 australia_data_dir <- "shiny_data_australia"
 australia_needed_files <- c(
-  "australia_panel_filtered.rds", "hist_by_country_australia.rds",
-  "company_lookup_australia.rds", "settings_australia.rds"
+  "australia_panel_filtered.rds", "future_pred_australia.rds", "hist_by_country_australia.rds",
+  "hist_by_sector_australia.rds", "company_lookup_australia.rds", "settings_australia.rds"
 )
 has_australia_data <- all(file.exists(file.path(australia_data_dir, australia_needed_files)))
 
 australia_panel_filtered  <- if (has_australia_data) readRDS(file.path(australia_data_dir, "australia_panel_filtered.rds"))  else NULL
+future_pred_australia     <- if (has_australia_data) readRDS(file.path(australia_data_dir, "future_pred_australia.rds"))     else NULL
 hist_by_country_australia <- if (has_australia_data) readRDS(file.path(australia_data_dir, "hist_by_country_australia.rds")) else NULL
+hist_by_sector_australia  <- if (has_australia_data) readRDS(file.path(australia_data_dir, "hist_by_sector_australia.rds"))  else NULL
 company_lookup_australia  <- if (has_australia_data) readRDS(file.path(australia_data_dir, "company_lookup_australia.rds"))  else NULL
 settings_australia        <- if (has_australia_data) readRDS(file.path(australia_data_dir, "settings_australia.rds"))        else NULL
 
-australia_company_choices <- if (has_australia_data) setNames(company_lookup_australia$company_id, company_lookup_australia$company_name) else character(0)
+sector_list_australia_real <- if (has_australia_data) as.character(settings_australia$sector_list) else character(0)
+australia_company_choices  <- if (has_australia_data) setNames(company_lookup_australia$company_id, company_lookup_australia$company_name) else character(0)
 
-# ---- Chile real company data (Latin America) -- OPTIONAL, same
-# graceful-degradation pattern as every other region. Genuinely no
-# hist_by_sector_chile.rds -- every one of the 8 companies is in a
-# DIFFERENT sector (confirmed by direct inspection), so a sector
-# total would just republish one company's own number, not a real
-# aggregation. future_pred_chile DOES exist here (unlike Africa/
-# Australia) -- Chile has 3 real years per company, enough for a
-# simple per-company linear trend (not a full mixed model -- see the
-# pipeline's own header notes on why that distinction matters). ----
-chile_data_dir <- "shiny_data_latam_chile"
+# ---- Chile + Brazil real company data (Latin America) -- OPTIONAL,
+# same graceful-degradation pattern as every other region. NOW a
+# genuine two-country panel (object/file names kept as *_chile purely
+# for continuity with the chile_rcp_* code below -- the data inside
+# covers Brazil too, replacing what used to be a "Brazil is still
+# synthetic" placeholder). hist_by_sector_chile.rds NOW EXISTS --
+# Chile's own 8 companies are still each in a distinct sector (that
+# hasn't changed), but Brazil's real SICS sector classification has
+# genuine multi-company sectors, so a real rollup exists there.
+# future_pred_chile covers both countries, a per-company linear trend
+# for each (see the pipeline's own header notes on why not a full
+# mixed model for either). ----
+chile_data_dir <- "shiny_data_latam"
 chile_needed_files <- c(
   "chile_panel_filtered.rds", "future_pred_chile.rds", "hist_by_country_chile.rds",
-  "company_lookup_chile.rds", "settings_chile.rds"
+  "hist_by_sector_chile.rds", "company_lookup_chile.rds", "settings_chile.rds"
 )
 has_chile_data <- all(file.exists(file.path(chile_data_dir, chile_needed_files)))
 
 chile_panel_filtered  <- if (has_chile_data) readRDS(file.path(chile_data_dir, "chile_panel_filtered.rds"))  else NULL
 future_pred_chile     <- if (has_chile_data) readRDS(file.path(chile_data_dir, "future_pred_chile.rds"))     else NULL
 hist_by_country_chile <- if (has_chile_data) readRDS(file.path(chile_data_dir, "hist_by_country_chile.rds")) else NULL
+hist_by_sector_chile  <- if (has_chile_data) readRDS(file.path(chile_data_dir, "hist_by_sector_chile.rds"))  else NULL
 company_lookup_chile  <- if (has_chile_data) readRDS(file.path(chile_data_dir, "company_lookup_chile.rds"))  else NULL
 settings_chile        <- if (has_chile_data) readRDS(file.path(chile_data_dir, "settings_chile.rds"))        else NULL
 
@@ -455,6 +534,37 @@ x_breaks         <- settings$x_breaks
 sector_list      <- settings$sector_list
 state_list       <- if (!is.null(settings$state_list)) settings$state_list else character(0)
 facility_choices <- settings$facility_choices
+
+# ---- Shared trend-chart theme (visual polish pass) -- cleaner
+# gridlines (y only, no panel border), bolder title, and legend
+# suppressed when ggrepel end-of-line labels are doing that job
+# instead. One function so every region's trend chart looks and
+# behaves consistently, and a later palette/theme tweak only needs to
+# change it here once.
+trend_chart_theme <- function(base_size = 14, show_legend = TRUE) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      # MODERNIZED (per direct request) -- a faint off-white panel tint
+      # (instead of plain white) reads as a deliberate "card" surface
+      # rather than an unstyled default; axis lines lightened and
+      # thinned to match; axis text given an explicit softer grey
+      # instead of ggplot's default near-black.
+      panel.background    = element_rect(fill = "#FCFCFD", color = NA),
+      plot.background      = element_rect(fill = "white", color = NA),
+      panel.grid.minor   = element_blank(),
+      panel.grid.major.x = element_blank(),
+      panel.grid.major.y = element_line(color = "grey92", linewidth = 0.4),
+      axis.line.x        = element_line(color = "grey75", linewidth = 0.35),
+      axis.ticks.x        = element_line(color = "grey75", linewidth = 0.35),
+      axis.text            = element_text(color = "grey35"),
+      plot.title          = element_text(face = "bold", size = base_size + 2, color = "#1B2631"),
+      plot.subtitle       = element_text(color = "grey45", size = base_size - 3),
+      legend.position      = if (show_legend) "bottom" else "none",
+      legend.text          = element_text(size = base_size - 4),
+      legend.key           = element_rect(fill = NA, color = NA),
+      plot.margin          = margin(t = 12, r = 28, b = 10, l = 10)
+    )
+}
 
 # Quality gate metadata (what the pipeline actually applied globally) --
 # falls back to NULL display if running against an older export that
@@ -637,6 +747,85 @@ get_scope23_ratio <- function(sector) {
   if (nrow(row) == 0) return(NULL)
   list(scope2_multiplier = row$scope2_multiplier[1], scope3_multiplier = row$scope3_multiplier[1],
        confidence = row$scope23_confidence[1])
+}
+
+# ---- Same Scope 2/3 ratio approach, for the EU tab (per direct
+# request) ---------------------------------------------------------
+# scope23_ratio_table is keyed on US GHGRP sector names, which don't
+# exist in the EU data (whose own "sector bucket" is an E-PRTR Annex I
+# activity code, see eu_sector_code_label() above). The Hertwich &
+# Wood (2018) ratios themselves only vary by TWO broad buckets in that
+# table anyway ("Energy" vs "Industry" -- every US sector row maps to
+# one or the other), so this reuses the exact same two multipliers,
+# picked by mapping the EU code's leading category number to whichever
+# bucket it's conceptually closest to. Categories with no reasonable
+# match in the paper (7 = livestock/aquaculture, 8 = food/beverage,
+# 9 = other) are left unmapped -- NULL, "not estimated" -- same
+# discipline as get_scope23_ratio() itself: never silently guess a
+# number with no basis.
+eu_sector_category_ipcc_bucket <- c(
+  "1" = "Energy",    # Energy sector
+  "2" = "Industry",  # Production and processing of metals
+  "3" = "Industry",  # Mineral industry
+  "4" = "Industry",  # Chemical industry
+  "5" = "Industry",  # Waste and waste water management
+  "6" = "Industry"   # Paper, pulp, wood and timber production
+)
+get_scope23_ratio_eu <- function(sector_bucket_code) {
+  if (is.null(sector_bucket_code) || is.na(sector_bucket_code) || !nzchar(sector_bucket_code)) return(NULL)
+  cat_num <- sub("^([0-9]+).*", "\\1", sector_bucket_code)
+  # BUGFIX (was): double-bracket indexing on a plain named vector
+  # throws "subscript out of bounds" for a name that isn't present
+  # (categories 7-9 aren't mapped, on purpose) -- it does not return
+  # NULL the way the same indexing on a list does. That crashed the
+  # whole Scope 2/3 tab for any "Other"/livestock/food-sector company
+  # instead of showing the intended "not estimated" message. Guarded
+  # with a membership check first, same pattern already used in
+  # eu_sector_code_label() above.
+  if (!(cat_num %in% names(eu_sector_category_ipcc_bucket))) return(NULL)
+  bucket <- eu_sector_category_ipcc_bucket[[cat_num]]
+  row <- scope23_ratio_table %>% filter(ipcc_bucket == bucket) %>% slice(1)
+  if (nrow(row) == 0) return(NULL)
+  list(
+    scope2_multiplier = row$scope2_multiplier[1], scope3_multiplier = row$scope3_multiplier[1],
+    confidence = paste0(row$scope23_confidence[1], " (proxied via the US GHGRP ", bucket, " bucket -- not EU-specific)")
+  )
+}
+
+# Shared SBTi call for the EU Company Profile tab (per direct request:
+# "add the industry emissions and SBTi in the 3 scopes, same approach as
+# the USA case"). One function services BOTH "the company's own SBTi
+# track" and "the industry benchmark's own SBTi track" -- the only
+# difference between the two is which base/most-recent-year Scope 1
+# level gets passed in (the company's own emissions, or the sector
+# benchmark's). Scope 2/3 base/mry values are always ratio-scaled off
+# that same Scope 1 level via get_scope23_ratio_eu() -- EU has no
+# separate manual entry for a Scope 2/3 SBTi baseline the way the US
+# Calculator tab does, so (same discipline as the Industry benchmark
+# line and "Your stated goal" elsewhere on this tab) the ratio proxy is
+# the honest stand-in, not a fabricated independent figure. Scope 3 uses
+# sbti_calculate()'s own default Cross-sector ACA / 1.5C track, falling
+# back to the shared base_year/target_year/most_recent_year since EU has
+# no separate Scope-3-specific year inputs either.
+eu_cp_sbti_calc <- function(base_year, base_s1, mry_year, mry_s1, target_year, sector_code, company_nm) {
+  ratio <- tryCatch(get_scope23_ratio_eu(sector_code), error = function(e) NULL)
+  s2_val     <- if (!is.null(ratio) && !is.na(base_s1)) base_s1 * ratio$scope2_multiplier else NA_real_
+  mry_s2_val <- if (!is.null(ratio) && !is.na(mry_s1))  mry_s1  * ratio$scope2_multiplier else NA_real_
+  s3_val     <- if (!is.null(ratio) && !is.na(base_s1)) base_s1 * ratio$scope3_multiplier else NA_real_
+  mry_s3_val <- if (!is.null(ratio) && !is.na(mry_s1))  mry_s1  * ratio$scope3_multiplier else NA_real_
+  tryCatch(
+    sbti_calculate(
+      company_name = company_nm,
+      target_setting_method = "Absolute Contraction Approach",
+      base_year = base_year, base_year_s1_e = base_s1,
+      base_year_s2_e = s2_val, base_year_s3_e = s3_val,
+      target_year = target_year,
+      most_recent_year = mry_year, mry_s1_e = mry_s1,
+      mry_s2_e = mry_s2_val, mry_s3_e = mry_s3_val,
+      net_zero_year = 2050
+    ),
+    error = function(e) list(error = conditionMessage(e))
+  )
 }
 
 # ======================================================
@@ -1444,6 +1633,53 @@ country_centroids <- tribble(
 has_subnational_data <- function(country) identical(country, "United States")
 
 # ======================================================
+# SHARED: Portfolio Curation/Mix Engine location preference
+# Lets a buyer hard-include or hard-exclude specific countries/macro-
+# regions from the candidate credit pool -- distinct from
+# compute_proximity_score() (defined later), which only SOFTLY favors
+# projects near the buyer's OWN facility. This is an explicit buyer
+# preference about where their credits come from (e.g. "never Middle
+# East", "only Latin America"), independent of where their own
+# operations are, and independent of proximity.
+# ======================================================
+
+geo_preference_choices <- c(
+  setNames(paste0("COUNTRY:", global_country_list), global_country_list),
+  setNames(paste0("REGION:", sort(unique(country_region_lookup))),
+           paste0("Region: ", sort(unique(country_region_lookup))))
+)
+
+geo_preference_ui <- function(prefix) {
+  tagList(
+    radioButtons(
+      paste0(prefix, "_geo_mode"), "Credit origin preference",
+      choices = c("No preference" = "none", "Never buy from" = "exclude"),
+      selected = "none"
+    ),
+    conditionalPanel(
+      condition = sprintf("input['%s_geo_mode'] != 'none'", prefix),
+      selectizeInput(
+        paste0(prefix, "_geo_selection"), NULL,
+        choices = geo_preference_choices, multiple = TRUE,
+        options = list(placeholder = "Countries or regions...")
+      )
+    )
+  )
+}
+
+# Applies that preference to a catalog -- call this right before handing
+# a catalog to solve_portfolio_lp(). No mode set, or nothing selected,
+# leaves the catalog unchanged.
+apply_geo_preference <- function(catalog, mode, selection) {
+  if (is.null(mode) || mode == "none" || is.null(selection) || length(selection) == 0) return(catalog)
+  sel_countries <- sub("^COUNTRY:", "", selection[startsWith(selection, "COUNTRY:")])
+  sel_regions   <- sub("^REGION:", "", selection[startsWith(selection, "REGION:")])
+  matches <- (!is.na(catalog$country) & catalog$country %in% sel_countries) |
+             (!is.na(catalog$geography) & catalog$geography %in% sel_regions)
+  catalog[!matches, , drop = FALSE]
+}
+
+# ======================================================
 # SYNTHETIC COUNTRY DATA -- Chile, Brazil, Australia, India, Japan,
 # South Africa, Morocco, Singapore
 # ======================================================
@@ -1526,6 +1762,15 @@ global_country_list_available <- sort(unique(global_country_emissions$country))
 # single render) -- reused both for the centroid lookup below AND as the
 # actual county BOUNDARY layer on the facility/project maps.
 us_county_map_data <- ggplot2::map_data("county")
+
+# Same reasoning as us_county_map_data above -- computed ONCE here.
+# This used to be recomputed inline inside build_facility_map_us() on
+# every single render (3 call sites: Methodologies, Short-Term, and
+# Long-Term tabs), which meant every slider/budget/weight change on
+# the US Portfolio Mix tabs re-parsed this ~15,000-row polygon dataset
+# from scratch -- a real, measurable source of the app feeling slower
+# as more region tabs and reactives were added around it.
+us_states_map <- ggplot2::map_data("state")
 
 # REAL county names AND centroids, both derived from the SAME single
 # source (ggplot2::map_data("county")) -- NOT cross-referenced against a
@@ -1964,6 +2209,202 @@ globe_panel_ui <- function(wrapper_id) {
 # so a fix here fixes all four at once. Per explicit instruction, this
 # uses placeholder SYNTHETIC country-level data -- clearly labeled as
 # such in the tab itself -- pending real data to be provided later.
+# Now that the six regional navbarMenu dropdowns are hidden from the
+# visible navbar (Global Portfolio wizard is the front door), there is
+# no longer any visible way to switch between a region's Company
+# Profile and Portfolio Mix once landed on one -- the dropdown that
+# used to do this is gone. This renders a small pill switcher at the
+# top of both tabs so that link still exists, just relocated. Clicking
+# fires Shiny.setInputValue(...), caught by one shared observer
+# (region_switch_click) that calls updateNavbarPage().
+# Replaces the old two-step "Select an existing company / Add a new
+# company" radio choice with ONE field: type a company name and it is
+# matched against the real dataset as you type (via selectize search);
+# if nothing matches, the typed text is used as-is to create a new
+# company (selectize's own `create = TRUE` option). This is purely a
+# UI simplification -- every downstream reactive in this app still
+# reads the same `<prefix>_mode` / `<prefix>_existing_picker` /
+# `<prefix>_new_name` inputs it always did, exactly as before, so none
+# of that logic needs to change. A hidden radioButtons keeps
+# `<prefix>_mode` a real Shiny input (so existing `conditionalPanel`
+# JS conditions and `input$<prefix>_mode` reads keep working
+# unchanged); wire_single_match_company() below is the observer that
+# keeps it, and the two hidden picker/name inputs, in sync with
+# whichever single field the user actually typed into.
+single_match_company_ui <- function(prefix, choices, mode_default = "existing", label = "Company") {
+  # `choices` is accepted (and still required by every call site, so the
+  # real company list stays right next to the UI it feeds) but NOT
+  # embedded into the widget here -- Shiny warned that these selects
+  # ("contains a large number of options; consider using server-side
+  # selectize") because the full list was being shipped to the browser
+  # at page-load time. Built empty here; init_server_side_company_picker()
+  # (called once per region in the server function) pushes the real list
+  # in via updateSelectizeInput(..., server = TRUE), which only sends
+  # matching options as the user types instead of all of them up front.
+  tagList(
+    selectizeInput(
+      paste0(prefix, "_match"), label,
+      choices = c("Type a company name..." = ""),
+      selected = "",
+      options = list(create = TRUE, placeholder = "Type a company name -- matches an existing one, or adds it as new")
+    ),
+    tags$div(
+      style = "display:none;",
+      radioButtons(paste0(prefix, "_mode"), NULL, choices = c("existing", "new"), selected = mode_default)
+    )
+  )
+}
+
+# Pushes a company-picker selectizeInput's real choice list in
+# server-side (see single_match_company_ui()'s comment for why) --
+# call once per region, right where wire_single_match_company() is
+# already called for that region. Covers both the visible/hidden
+# "_match" field and, when given, its companion "_existing_picker".
+init_server_side_company_picker <- function(session, prefix, choices, existing_picker_id = NULL, placeholder = "Type to search...") {
+  updateSelectizeInput(session, paste0(prefix, "_match"), choices = c("Type a company name..." = "", choices),
+                        selected = character(0), server = TRUE)
+  if (!is.null(existing_picker_id)) {
+    updateSelectizeInput(session, existing_picker_id, choices = c(setNames("", placeholder), choices),
+                          selected = character(0), server = TRUE)
+  }
+}
+
+# `choices` is the same named vector (value = company id, name =
+# display name) passed to single_match_company_ui(); pass a reactive
+# expression via `choices_fn` instead when the list can change during
+# the session (e.g. loaded server-side). `existing_picker_id` /
+# `new_name_id` are the pre-existing hidden inputs each region's
+# server code already reads from.
+wire_single_match_company <- function(input, session, prefix, existing_picker_id, new_name_id, choices_fn) {
+  observeEvent(input[[paste0(prefix, "_match")]], {
+    val <- input[[paste0(prefix, "_match")]]
+    choices <- choices_fn()
+    is_existing <- !is.null(val) && nzchar(val) && val %in% choices
+    updateRadioButtons(session, paste0(prefix, "_mode"), selected = if (is_existing) "existing" else "new")
+    if (is_existing) {
+      updateSelectizeInput(session, existing_picker_id, selected = val)
+    } else if (!is.null(val) && nzchar(val)) {
+      updateTextInput(session, new_name_id, value = val)
+    }
+  }, ignoreNULL = FALSE, ignoreInit = TRUE)
+}
+
+region_switcher_ui <- function(cp_value, pm_value, current) {
+  pill <- function(label, target, active) {
+    tags$span(
+      style = paste0(
+        "display:inline-block; padding:5px 14px; border-radius:14px; font-size:12.5px; font-weight:600; cursor:pointer; margin-right:8px; ",
+        if (active) "background:#1B2631; color:white;" else "background:#F0F2F4; color:#5D6D7E;"
+      ),
+      onclick = if (active) "" else sprintf("Shiny.setInputValue('region_switch_click', '%s', {priority: 'event'})", target),
+      label
+    )
+  }
+  tags$div(
+    style = "margin-bottom:1rem;",
+    pill("Company Profile", cp_value, identical(current, "cp")),
+    pill("Portfolio Mix", pm_value, identical(current, "pm"))
+  )
+}
+
+# Shared visual anchor for every real-data Global Sector View sub-tab
+# (United States, Europe x2, Asia, Australia, Latin America) -- one
+# small "REAL DATA" chip + one coverage line, in the same place (top
+# of the sidebar, above the sector picker) and the same style on every
+# one of them, so the family reads as one consistent feature rather
+# than five separately-built tabs. Deliberately does NOT try to force
+# every region's CHART to look identical -- US/EU genuinely have a
+# real forecast + target pathway that Asia/Australia/Latin America
+# don't, and that real difference stays visible rather than papered
+# over.
+sector_view_badge <- function(coverage) {
+  tags$div(
+    style = "margin-bottom:14px;",
+    tags$div(
+      style = paste0(
+        "display:inline-flex; align-items:center; gap:5px; font-size:10.5px; font-weight:700; ",
+        "letter-spacing:0.02em; padding:2px 8px; border-radius:10px; ",
+        "background:rgba(255,255,255,0.16); color:#FFFFFF; margin-bottom:6px;"
+      ),
+      tags$span(style = "width:6px; height:6px; border-radius:50%; background:#2ECC71;"),
+      "REAL DATA"
+    ),
+    tags$div(style = "font-size:11.5px; color:#EAF6F9; font-weight:600; line-height:1.4;", coverage)
+  )
+}
+
+# ---- Shared Sector View stat-card row -------------------------------
+# Extracted from the United States Sector View's original local
+# stat_card() helper so every region's stat-card row is visually
+# identical rather than separately reimplemented per region. Each
+# caller computes its own real numbers (a region's real n_companies,
+# n_facilities, latest-year totals, forecast, etc.) and passes them in
+# as pre-built cards -- this pair of functions only lays them out.
+region_stat_card <- function(value, label) {
+  tags$div(
+    style = "flex:1; background:#F4F6F7; border-radius:8px; padding:0.75rem 1rem; text-align:center;",
+    tags$div(style = "font-size:22px; font-weight:700; color:#2C3E50;", value),
+    tags$div(style = "font-size:11.5px; color:#7F8C8D;", label)
+  )
+}
+
+region_stat_card_row <- function(...) {
+  tags$div(style = "display:flex; gap:12px; margin-bottom:16px;", ...)
+}
+
+# Shared year-over-year bar chart -- stands in for the United States'
+# forecast-vs-target "credits" bar (make_credit_bar) in every region
+# that has no real Industry Target wired into Sector View yet (EU's
+# model-bucket sub-tab has a real forecast but no target; EU's official
+# sub-tab, Asia, Australia and Latin America have neither). Rather than
+# fabricate a gap against a target that doesn't exist for that region,
+# this plots the real, observed year-over-year change in whatever
+# series is already on screen -- a genuine number derived straight from
+# the same historical data, nothing invented.
+region_yoy_bar <- function(df, value_col, y_label, x_breaks_arg = scales::pretty_breaks(), divisor = 1) {
+  yoy <- df %>%
+    arrange(year) %>%
+    transmute(year, value = .data[[value_col]] / divisor) %>%
+    mutate(change = value - lag(value)) %>%
+    filter(!is.na(change))
+  if (nrow(yoy) == 0) return(NULL)
+  ggplot(yoy, aes(x = year, y = change, fill = change > 0)) +
+    geom_col(width = 0.7) +
+    geom_hline(yintercept = 0, color = "grey40", linewidth = 0.4) +
+    scale_fill_manual(values = c(`TRUE` = "#C0392B", `FALSE` = "#27AE60"), guide = "none") +
+    scale_x_continuous(breaks = x_breaks_arg) +
+    scale_y_continuous(labels = comma) +
+    labs(
+      subtitle = "Year-over-year change (red = increase, green = decrease) -- observed data only",
+      x = NULL, y = y_label
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(plot.subtitle = element_text(color = "grey40", size = 10))
+}
+
+# Shared stat-card content for the three "reporting companies" sector
+# views (Asia, Australia, Latin America) -- all three share the exact
+# same real-data shape (sector, year, emissions, n_companies) coming out
+# of their own pipelines, so the same 4 real numbers apply to all three
+# without adapting anything per region.
+company_count_sector_cards <- function(df) {
+  latest_year <- max(df$year)
+  latest_val  <- df$emissions[df$year == latest_year][1]
+  prior_row   <- df %>% filter(year == latest_year - 1)
+  yoy_pct <- if (nrow(prior_row) == 1 && !is.na(prior_row$emissions[1]) && prior_row$emissions[1] != 0) {
+    (latest_val - prior_row$emissions[1]) / prior_row$emissions[1] * 100
+  } else {
+    NA_real_
+  }
+
+  region_stat_card_row(
+    region_stat_card(max(df$n_companies), "Reporting companies"),
+    region_stat_card(paste0(comma(round(latest_val)), " t"), paste0(latest_year, " emissions (sum)")),
+    region_stat_card(if (!is.na(yoy_pct)) paste0(sprintf("%+.1f", yoy_pct), "%") else "--", "YoY change"),
+    region_stat_card(paste0(min(df$year), "-", max(df$year)), "Years covered")
+  )
+}
+
 synthetic_cp_tab_ui <- function(prefix, countries) {
   tabPanel(
     "Company Profile",
@@ -1996,12 +2437,11 @@ synthetic_cp_tab_ui <- function(prefix, countries) {
           sliderInput(paste0(prefix, "_cp_target_year"), "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
           sliderInput(paste0(prefix, "_cp_target_reduction"), "Target reduction from baseline (%)",
                       value = 30, min = 1, max = 100, step = 1, post = "%"),
-          helpText(em("This is the company's own aspirational target -- not a sourced sector or regulatory number.")),
-          hr(),
-          actionButton(paste0(prefix, "_cp_calculate"), "Calculate", class = "btn-primary", width = "100%", icon = icon("play"))
+          helpText(em("This is the company's own aspirational target -- not a sourced sector or regulatory number."))
         ),
         mainPanel(
           width = 8,
+          region_switcher_ui(paste0(prefix, "_company_profile"), paste0(prefix, "_portfolio_mix"), "cp"),
           uiOutput(paste0(prefix, "_cp_note")),
           plotOutput(paste0(prefix, "_cp_trend_plot"), height = "460px"),
           br(),
@@ -2025,31 +2465,38 @@ asia_real_cp_tab_ui <- function() {
     "Company Profile",
     value = "asia_company_profile",
     fluidPage(
-      tags$div(
-        style = "background:#EAFAF1; border:1px solid #A9DFBF; border-radius:8px; padding:0.8rem 1.2rem; margin-bottom:1rem;",
-        tags$b("Real data: "), "India and Singapore company-reported emissions -- see the Facilities tab for per-company detail. Companies not in this real dataset can still be added manually below."
-      ),
+      # Top "Real data: India and Singapore..." banner removed per direct
+      # request, same as the LatAm tab's banner. No reactive or data logic
+      # depended on this box.
       sidebarLayout(
         sidebarPanel(
-          width = 4,
-          radioButtons(
-            "asia_rcp_mode", "Company",
-            choices = c("Select an existing company" = "existing", "Add a new company" = "new"),
-            selected = "existing"
+          # Narrowed to match the US Company Profile sidebar (per direct
+          # request to keep this tab as consistent as possible with the
+          # US case): a read-only header replaces the visible Company/
+          # Sector/Country controls, all hidden below rather than
+          # removed -- they stay fully wired for every reactive that
+          # reads them.
+          width = 2,
+          uiOutput("asia_rcp_profile_header"),
+          hr(),
+          tags$div(style = "display:none;",
+            single_match_company_ui("asia_rcp", asia_company_choices)
           ),
-          conditionalPanel(
-            condition = "input.asia_rcp_mode == 'existing'",
+          tags$div(
+            style = "display:none;",
             selectizeInput("asia_rcp_existing_picker", "Company",
-                            choices = c("Type to search..." = "", asia_company_choices),
+                            choices = NULL,
                             options = list(placeholder = "Type to search..."))
           ),
+          tags$div(style = "display:none;", textInput("asia_rcp_new_name", NULL, placeholder = "Company / Facility Name")),
           conditionalPanel(
             condition = "input.asia_rcp_mode == 'new'",
-            textInput("asia_rcp_new_name", NULL, placeholder = "Company / Facility Name"),
-            selectInput("asia_rcp_country", "Company location (country)",
-                        choices = c("India", "Singapore"), selected = "India"),
-            selectInput("asia_rcp_sector", "Closest matching sector",
-                        choices = sector_list_asia_real, selected = sector_list_asia_real[1]),
+            tags$div(style = "display:none;",
+              selectInput("asia_rcp_country", "Company location (country)",
+                          choices = c("India", "Singapore"), selected = "India"),
+              selectInput("asia_rcp_sector", "Closest matching sector",
+                          choices = sector_list_asia_real, selected = sector_list_asia_real[1])
+            ),
             tags$div(
               style = "background:#F4F6F7; border-radius:6px; padding:0.7rem 1rem; margin: 12px 0;",
               tags$b("Upload from Excel"), tags$br(),
@@ -2069,50 +2516,45 @@ asia_real_cp_tab_ui <- function() {
           sliderInput("asia_rcp_target_year", "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
           sliderInput("asia_rcp_target_reduction", "Target reduction from baseline (%)",
                       value = 30, min = 1, max = 100, step = 1, post = "%"),
-          helpText(em("This is the company's own aspirational target -- not a sourced sector or regulatory number.")),
-          hr(),
-          actionButton("asia_rcp_calculate", "Calculate", class = "btn-primary", width = "100%", icon = icon("play"))
+          helpText(em("This is the company's own aspirational target -- not a sourced sector or regulatory number."))
         ),
         mainPanel(
-          width = 8,
+          width = 10,
+          region_switcher_ui("asia_company_profile", "asia_portfolio_mix", "cp"),
           uiOutput("asia_rcp_note"),
           tabsetPanel(
             tabPanel(
               "Scope 1",
               br(),
-              plotOutput("asia_rcp_trend_plot_s1", height = "440px"),
-              plotOutput("asia_rcp_level_bar_s1", height = "340px"),
-              plotOutput("asia_rcp_gap_bar_s1", height = "260px"),
+              tags$div(class = "chart-card", plotOutput("asia_rcp_trend_plot_s1", height = "440px")),
+              tags$div(class = "chart-card", plotOutput("asia_rcp_level_bar_s1", height = "340px")),
+              tags$div(class = "chart-card", plotOutput("asia_rcp_gap_bar_s1", height = "260px")),
               br(),
               DTOutput("asia_rcp_table_s1")
             ),
             tabPanel(
               "Scope 2",
               br(),
-              plotOutput("asia_rcp_trend_plot_s2", height = "440px"),
-              plotOutput("asia_rcp_level_bar_s2", height = "340px"),
-              plotOutput("asia_rcp_gap_bar_s2", height = "260px"),
+              tags$div(class = "chart-card", plotOutput("asia_rcp_trend_plot_s2", height = "440px")),
+              tags$div(class = "chart-card", plotOutput("asia_rcp_level_bar_s2", height = "340px")),
+              tags$div(class = "chart-card", plotOutput("asia_rcp_gap_bar_s2", height = "260px")),
               br(),
               DTOutput("asia_rcp_table_s2")
             ),
             tabPanel(
               "Scope 3",
               br(),
-              plotOutput("asia_rcp_trend_plot_s3", height = "440px"),
-              plotOutput("asia_rcp_level_bar_s3", height = "340px"),
-              plotOutput("asia_rcp_gap_bar_s3", height = "260px"),
+              tags$div(class = "chart-card", plotOutput("asia_rcp_trend_plot_s3", height = "440px")),
+              tags$div(class = "chart-card", plotOutput("asia_rcp_level_bar_s3", height = "340px")),
+              tags$div(class = "chart-card", plotOutput("asia_rcp_gap_bar_s3", height = "260px")),
               br(),
               DTOutput("asia_rcp_table_s3")
-            ),
-            tabPanel(
-              "SBTi Detail",
-              br(),
-              uiOutput("asia_rcp_sbti_scope23_note"),
-              uiOutput("asia_rcp_sbti_error"),
-              plotOutput("asia_rcp_sbti_plot", height = "440px"),
-              br(),
-              DTOutput("asia_rcp_sbti_table")
             )
+            # "SBTi Detail" tabPanel removed per direct request, same as
+            # US/EU/LatAm -- asia_rcp_sbti_scope23_note/asia_rcp_sbti_error/
+            # asia_rcp_sbti_plot/asia_rcp_sbti_table and the underlying
+            # asia_rcp_sbti_result() reactive are left untouched; only
+            # this dedicated subtab is gone.
           )
         )
       )
@@ -2138,23 +2580,30 @@ africa_real_cp_tab_ui <- function() {
       ),
       sidebarLayout(
         sidebarPanel(
-          width = 4,
-          radioButtons(
-            "africa_rcp_mode", "Company",
-            choices = c("Select an existing company" = "existing", "Add a new company" = "new"),
-            selected = "existing"
+          # Narrowed to match the US Company Profile sidebar (per direct
+          # request to keep this tab as consistent as possible with the
+          # US case): a read-only header replaces the visible Company/
+          # Sector controls, both hidden below rather than removed --
+          # they stay fully wired for every reactive that reads them.
+          width = 2,
+          uiOutput("africa_rcp_profile_header"),
+          hr(),
+          tags$div(style = "display:none;",
+            single_match_company_ui("africa_rcp", africa_company_choices)
           ),
-          conditionalPanel(
-            condition = "input.africa_rcp_mode == 'existing'",
+          tags$div(
+            style = "display:none;",
             selectizeInput("africa_rcp_existing_picker", "Company",
-                            choices = c("Type to search..." = "", africa_company_choices),
+                            choices = NULL,
                             options = list(placeholder = "Type to search..."))
           ),
+          tags$div(style = "display:none;", textInput("africa_rcp_new_name", NULL, placeholder = "Company / Facility Name")),
           conditionalPanel(
             condition = "input.africa_rcp_mode == 'new'",
-            textInput("africa_rcp_new_name", NULL, placeholder = "Company / Facility Name"),
-            selectInput("africa_rcp_sector", "Closest matching sector",
-                        choices = sector_list_africa_real, selected = sector_list_africa_real[1]),
+            tags$div(style = "display:none;",
+              selectInput("africa_rcp_sector", "Closest matching sector",
+                          choices = sector_list_africa_real, selected = sector_list_africa_real[1])
+            ),
             tags$div(
               style = "background:#F4F6F7; border-radius:6px; padding:0.7rem 1rem; margin: 12px 0;",
               tags$b("Upload from Excel"), tags$br(),
@@ -2174,50 +2623,47 @@ africa_real_cp_tab_ui <- function() {
           sliderInput("africa_rcp_target_year", "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
           sliderInput("africa_rcp_target_reduction", "Target reduction from baseline (%)",
                       value = 30, min = 1, max = 100, step = 1, post = "%"),
-          helpText(em("This is the company's own aspirational target -- not a sourced sector or regulatory number.")),
-          hr(),
-          actionButton("africa_rcp_calculate", "Calculate", class = "btn-primary", width = "100%", icon = icon("play"))
+          helpText(em("This is the company's own aspirational target -- not a sourced sector or regulatory number."))
         ),
         mainPanel(
-          width = 8,
-          uiOutput("africa_rcp_note"),
+          width = 10,
+          region_switcher_ui("africa_company_profile", "africa_portfolio_mix", "cp"),
+          # uiOutput("africa_rcp_note") banner removed per direct request,
+          # same as Australia's -- output$africa_rcp_note itself is left
+          # defined below (unused) to keep the diff minimal.
           tabsetPanel(
             tabPanel(
               "Scope 1",
               br(),
-              plotOutput("africa_rcp_trend_plot_s1", height = "440px"),
-              plotOutput("africa_rcp_level_bar_s1", height = "340px"),
-              plotOutput("africa_rcp_gap_bar_s1", height = "260px"),
+              tags$div(class = "chart-card", plotOutput("africa_rcp_trend_plot_s1", height = "440px")),
+              tags$div(class = "chart-card", plotOutput("africa_rcp_level_bar_s1", height = "340px")),
+              tags$div(class = "chart-card", plotOutput("africa_rcp_gap_bar_s1", height = "260px")),
               br(),
               DTOutput("africa_rcp_table_s1")
             ),
             tabPanel(
               "Scope 2",
               br(),
-              plotOutput("africa_rcp_trend_plot_s2", height = "440px"),
-              plotOutput("africa_rcp_level_bar_s2", height = "340px"),
-              plotOutput("africa_rcp_gap_bar_s2", height = "260px"),
+              tags$div(class = "chart-card", plotOutput("africa_rcp_trend_plot_s2", height = "440px")),
+              tags$div(class = "chart-card", plotOutput("africa_rcp_level_bar_s2", height = "340px")),
+              tags$div(class = "chart-card", plotOutput("africa_rcp_gap_bar_s2", height = "260px")),
               br(),
               DTOutput("africa_rcp_table_s2")
             ),
             tabPanel(
               "Scope 3",
               br(),
-              plotOutput("africa_rcp_trend_plot_s3", height = "440px"),
-              plotOutput("africa_rcp_level_bar_s3", height = "340px"),
-              plotOutput("africa_rcp_gap_bar_s3", height = "260px"),
+              tags$div(class = "chart-card", plotOutput("africa_rcp_trend_plot_s3", height = "440px")),
+              tags$div(class = "chart-card", plotOutput("africa_rcp_level_bar_s3", height = "340px")),
+              tags$div(class = "chart-card", plotOutput("africa_rcp_gap_bar_s3", height = "260px")),
               br(),
               DTOutput("africa_rcp_table_s3")
-            ),
-            tabPanel(
-              "SBTi Detail",
-              br(),
-              uiOutput("africa_rcp_sbti_scope23_note"),
-              uiOutput("africa_rcp_sbti_error"),
-              plotOutput("africa_rcp_sbti_plot", height = "440px"),
-              br(),
-              DTOutput("africa_rcp_sbti_table")
             )
+            # "SBTi Detail" tabPanel removed per direct request, same as
+            # the other five regions -- africa_rcp_sbti_scope23_note/
+            # africa_rcp_sbti_error/africa_rcp_sbti_plot/africa_rcp_sbti_
+            # table and the underlying africa_rcp_sbti_result() reactive
+            # are left untouched; only this dedicated subtab is gone.
           )
         )
       )
@@ -2228,45 +2674,48 @@ africa_real_cp_tab_ui <- function() {
 
 # ---- Real-data Australia Company Profile UI (NGER registered
 # corporations) ----
-# Two deliberate omissions vs Africa/Asia, both because the source
-# genuinely doesn't support them, confirmed by direct inspection:
-#  - No "Industry benchmark" or "Industry-calculated goal" anywhere.
-#    NGER's published table has no sector/industry column at all --
-#    comparing a specific company against the median of ALL 392
-#    Australian companies regardless of sector (a mix of giant
-#    utilities and small firms) would be a methodologically
-#    meaningless comparison, not a real benchmark. Skipped entirely
-#    rather than faked.
+# One remaining deliberate omission vs Africa/Asia, because the source
+# genuinely doesn't support it, confirmed by direct inspection:
 #  - Scope 3 only available when adding a NEW company (their own
 #    entered data) -- NGER does not mandate Scope 3 reporting, so no
 #    real matched company has one.
+# Sector, however, IS now real: NGER's own published table has no
+# industry classification column, but a separate, externally-
+# researched GICS Sector mapping (one row per company, hand-researched
+# against all 392 companies -- not guessed from the company name) was
+# joined in by the pipeline, so Industry benchmark/Industry-calculated
+# goal now work here exactly like Africa/Asia, single-year caveat aside.
 australia_real_cp_tab_ui <- function() {
   tabPanel(
     "Company Profile",
     value = "australia_company_profile",
     fluidPage(
-      tags$div(
-        style = "background:#EAFAF1; border:1px solid #A9DFBF; border-radius:8px; padding:0.8rem 1.2rem; margin-bottom:1rem;",
-        tags$b("Real data: "), "Australia, NGER (National Greenhouse and Energy Reporting) registered corporations, 2023-24 -- mandatory regulatory reporting via the Clean Energy Regulator, single-year snapshot (no forecast model). No sector data or Scope 3 exists in this source for real companies -- Industry benchmark/Target are unavailable here, and Scope 3 is only shown if you add a new company with your own data."
-      ),
       sidebarLayout(
         sidebarPanel(
-          width = 4,
-          radioButtons(
-            "australia_rcp_mode", "Company",
-            choices = c("Select an existing company" = "existing", "Add a new company" = "new"),
-            selected = "existing"
+          # Narrowed to match the US Company Profile sidebar (per direct
+          # request to keep this tab as consistent as possible with the
+          # US case): a read-only header replaces the visible Company/
+          # Sector controls, both hidden below rather than removed --
+          # they stay fully wired for every reactive that reads them.
+          width = 2,
+          uiOutput("australia_rcp_profile_header"),
+          hr(),
+          tags$div(style = "display:none;",
+            single_match_company_ui("australia_rcp", australia_company_choices)
           ),
-          conditionalPanel(
-            condition = "input.australia_rcp_mode == 'existing'",
+          tags$div(
+            style = "display:none;",
             selectizeInput("australia_rcp_existing_picker", "Company",
-                            choices = c("Type to search..." = "", australia_company_choices),
+                            choices = NULL,
                             options = list(placeholder = "Type to search..."))
           ),
+          tags$div(style = "display:none;", textInput("australia_rcp_new_name", NULL, placeholder = "Company / Facility Name")),
           conditionalPanel(
             condition = "input.australia_rcp_mode == 'new'",
-            textInput("australia_rcp_new_name", NULL, placeholder = "Company / Facility Name"),
-            textInput("australia_rcp_sector", "Sector (free text -- no controlled list exists for this source)", placeholder = "e.g. Mining"),
+            tags$div(style = "display:none;",
+              selectInput("australia_rcp_sector", "Closest matching sector (GICS)",
+                          choices = sector_list_australia_real, selected = sector_list_australia_real[1])
+            ),
             tags$div(
               style = "background:#F4F6F7; border-radius:6px; padding:0.7rem 1rem; margin: 12px 0;",
               tags$b("Upload from Excel"), tags$br(),
@@ -2286,29 +2735,30 @@ australia_real_cp_tab_ui <- function() {
           sliderInput("australia_rcp_target_year", "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
           sliderInput("australia_rcp_target_reduction", "Target reduction from baseline (%)",
                       value = 30, min = 1, max = 100, step = 1, post = "%"),
-          helpText(em("This is the company's own aspirational target -- not a sourced sector or regulatory number.")),
-          hr(),
-          actionButton("australia_rcp_calculate", "Calculate", class = "btn-primary", width = "100%", icon = icon("play"))
+          helpText(em("This is the company's own aspirational target -- not a sourced sector or regulatory number."))
         ),
         mainPanel(
-          width = 8,
-          uiOutput("australia_rcp_note"),
+          width = 10,
+          region_switcher_ui("australia_company_profile", "australia_portfolio_mix", "cp"),
+          # uiOutput("australia_rcp_note") banner removed per direct
+          # request -- output$australia_rcp_note itself is left defined
+          # below (unused) to keep the diff minimal.
           tabsetPanel(
             tabPanel(
               "Scope 1",
               br(),
-              plotOutput("australia_rcp_trend_plot_s1", height = "440px"),
-              plotOutput("australia_rcp_level_bar_s1", height = "340px"),
-              plotOutput("australia_rcp_gap_bar_s1", height = "260px"),
+              tags$div(class = "chart-card", plotOutput("australia_rcp_trend_plot_s1", height = "440px")),
+              tags$div(class = "chart-card", plotOutput("australia_rcp_level_bar_s1", height = "340px")),
+              tags$div(class = "chart-card", plotOutput("australia_rcp_gap_bar_s1", height = "260px")),
               br(),
               DTOutput("australia_rcp_table_s1")
             ),
             tabPanel(
               "Scope 2",
               br(),
-              plotOutput("australia_rcp_trend_plot_s2", height = "440px"),
-              plotOutput("australia_rcp_level_bar_s2", height = "340px"),
-              plotOutput("australia_rcp_gap_bar_s2", height = "260px"),
+              tags$div(class = "chart-card", plotOutput("australia_rcp_trend_plot_s2", height = "440px")),
+              tags$div(class = "chart-card", plotOutput("australia_rcp_level_bar_s2", height = "340px")),
+              tags$div(class = "chart-card", plotOutput("australia_rcp_gap_bar_s2", height = "260px")),
               br(),
               DTOutput("australia_rcp_table_s2")
             ),
@@ -2316,21 +2766,18 @@ australia_real_cp_tab_ui <- function() {
               "Scope 3",
               br(),
               uiOutput("australia_rcp_scope3_unavailable_note"),
-              plotOutput("australia_rcp_trend_plot_s3", height = "440px"),
-              plotOutput("australia_rcp_level_bar_s3", height = "340px"),
-              plotOutput("australia_rcp_gap_bar_s3", height = "260px"),
+              tags$div(class = "chart-card", plotOutput("australia_rcp_trend_plot_s3", height = "440px")),
+              tags$div(class = "chart-card", plotOutput("australia_rcp_level_bar_s3", height = "340px")),
+              tags$div(class = "chart-card", plotOutput("australia_rcp_gap_bar_s3", height = "260px")),
               br(),
               DTOutput("australia_rcp_table_s3")
-            ),
-            tabPanel(
-              "SBTi Detail",
-              br(),
-              uiOutput("australia_rcp_sbti_scope23_note"),
-              uiOutput("australia_rcp_sbti_error"),
-              plotOutput("australia_rcp_sbti_plot", height = "440px"),
-              br(),
-              DTOutput("australia_rcp_sbti_table")
             )
+            # "SBTi Detail" tabPanel removed per direct request, same as
+            # US/EU/LatAm/Asia -- australia_rcp_sbti_scope23_note/
+            # australia_rcp_sbti_error/australia_rcp_sbti_plot/
+            # australia_rcp_sbti_table and the underlying
+            # australia_rcp_sbti_result() reactive are left untouched;
+            # only this dedicated subtab is gone.
           )
         )
       )
@@ -2350,29 +2797,36 @@ chile_real_cp_tab_ui <- function() {
     "Company Profile",
     value = "latam_company_profile",
     fluidPage(
-      tags$div(
-        style = "background:#EAFAF1; border:1px solid #A9DFBF; border-radius:8px; padding:0.8rem 1.2rem; margin-bottom:1rem;",
-        tags$b("Real data: "), "Chile, 8 companies, 2023-2025. Forecast is a simple per-company linear trend (not a mixed-effects model -- too few companies/years for one to be reliable). No Industry benchmark/Target -- every company here is in its own distinct sector, so there's no other company to compare against."
-      ),
+      # Top "Real data: Chile (8 companies...)..." banner removed per
+      # direct request. No reactive or data logic depended on this box --
+      # it was purely an informational note at the top of the tab.
       sidebarLayout(
         sidebarPanel(
-          width = 4,
-          radioButtons(
-            "chile_rcp_mode", "Company",
-            choices = c("Select an existing company" = "existing", "Add a new company" = "new"),
-            selected = "existing"
+          # Narrowed to match the US Company Profile sidebar (per direct
+          # request to keep this tab as consistent as possible with the
+          # US case): a read-only header replaces the visible Company/
+          # Sector controls, both of which are hidden below rather than
+          # removed -- they stay fully wired for every reactive that
+          # reads them.
+          width = 2,
+          uiOutput("chile_rcp_profile_header"),
+          hr(),
+          tags$div(style = "display:none;",
+            single_match_company_ui("chile_rcp", chile_company_choices)
           ),
-          conditionalPanel(
-            condition = "input.chile_rcp_mode == 'existing'",
+          tags$div(
+            style = "display:none;",
             selectizeInput("chile_rcp_existing_picker", "Company",
-                            choices = c("Type to search..." = "", chile_company_choices),
+                            choices = NULL,
                             options = list(placeholder = "Type to search..."))
           ),
+          tags$div(style = "display:none;", textInput("chile_rcp_new_name", NULL, placeholder = "Company / Facility Name")),
           conditionalPanel(
             condition = "input.chile_rcp_mode == 'new'",
-            textInput("chile_rcp_new_name", NULL, placeholder = "Company / Facility Name"),
-            selectInput("chile_rcp_sector", "Closest matching sector",
-                        choices = sector_list_chile_real, selected = sector_list_chile_real[1]),
+            tags$div(style = "display:none;",
+              selectInput("chile_rcp_sector", "Closest matching sector",
+                          choices = sector_list_chile_real, selected = sector_list_chile_real[1])
+            ),
             tags$div(
               style = "background:#F4F6F7; border-radius:6px; padding:0.7rem 1rem; margin: 12px 0;",
               tags$b("Upload from Excel"), tags$br(),
@@ -2392,50 +2846,45 @@ chile_real_cp_tab_ui <- function() {
           sliderInput("chile_rcp_target_year", "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
           sliderInput("chile_rcp_target_reduction", "Target reduction from baseline (%)",
                       value = 30, min = 1, max = 100, step = 1, post = "%"),
-          helpText(em("This is the company's own aspirational target -- not a sourced sector or regulatory number.")),
-          hr(),
-          actionButton("chile_rcp_calculate", "Calculate", class = "btn-primary", width = "100%", icon = icon("play"))
+          helpText(em("This is the company's own aspirational target -- not a sourced sector or regulatory number."))
         ),
         mainPanel(
-          width = 8,
+          width = 10,
+          region_switcher_ui("latam_company_profile", "latam_portfolio_mix", "cp"),
           uiOutput("chile_rcp_note"),
           tabsetPanel(
             tabPanel(
               "Scope 1",
               br(),
-              plotOutput("chile_rcp_trend_plot_s1", height = "440px"),
-              plotOutput("chile_rcp_level_bar_s1", height = "340px"),
-              plotOutput("chile_rcp_gap_bar_s1", height = "260px"),
+              tags$div(class = "chart-card", plotOutput("chile_rcp_trend_plot_s1", height = "440px")),
+              tags$div(class = "chart-card", plotOutput("chile_rcp_level_bar_s1", height = "340px")),
+              tags$div(class = "chart-card", plotOutput("chile_rcp_gap_bar_s1", height = "260px")),
               br(),
               DTOutput("chile_rcp_table_s1")
             ),
             tabPanel(
               "Scope 2",
               br(),
-              plotOutput("chile_rcp_trend_plot_s2", height = "440px"),
-              plotOutput("chile_rcp_level_bar_s2", height = "340px"),
-              plotOutput("chile_rcp_gap_bar_s2", height = "260px"),
+              tags$div(class = "chart-card", plotOutput("chile_rcp_trend_plot_s2", height = "440px")),
+              tags$div(class = "chart-card", plotOutput("chile_rcp_level_bar_s2", height = "340px")),
+              tags$div(class = "chart-card", plotOutput("chile_rcp_gap_bar_s2", height = "260px")),
               br(),
               DTOutput("chile_rcp_table_s2")
             ),
             tabPanel(
               "Scope 3",
               br(),
-              plotOutput("chile_rcp_trend_plot_s3", height = "440px"),
-              plotOutput("chile_rcp_level_bar_s3", height = "340px"),
-              plotOutput("chile_rcp_gap_bar_s3", height = "260px"),
+              tags$div(class = "chart-card", plotOutput("chile_rcp_trend_plot_s3", height = "440px")),
+              tags$div(class = "chart-card", plotOutput("chile_rcp_level_bar_s3", height = "340px")),
+              tags$div(class = "chart-card", plotOutput("chile_rcp_gap_bar_s3", height = "260px")),
               br(),
               DTOutput("chile_rcp_table_s3")
-            ),
-            tabPanel(
-              "SBTi Detail",
-              br(),
-              uiOutput("chile_rcp_sbti_scope23_note"),
-              uiOutput("chile_rcp_sbti_error"),
-              plotOutput("chile_rcp_sbti_plot", height = "440px"),
-              br(),
-              DTOutput("chile_rcp_sbti_table")
             )
+            # "SBTi Detail" tabPanel removed per direct request, same as
+            # US/EU -- chile_rcp_sbti_scope23_note/chile_rcp_sbti_error/
+            # chile_rcp_sbti_plot/chile_rcp_sbti_table and the underlying
+            # chile_rcp_sbti_result() reactive are left untouched; only
+            # this dedicated subtab is gone.
           )
         )
       )
@@ -2484,23 +2933,84 @@ ui <- navbarPage(
     tags$head(
       tags$title("Satya Carbon"),
       tags$style(HTML("
-        /* Refined top nav -- same Bootstrap navbar Shiny already
-           builds, just tightened up: clearer weight/spacing hierarchy,
-           a simple color underline on the active tab instead of the
-           default grey block, and no visual line at all for hidden
-           regional items so they don't leave a gap. */
-        .navbar-default { background:#FFFFFF; border-bottom:1px solid #E8EBED; box-shadow:0 1px 2px rgba(0,0,0,0.03); }
+        /* THEME (per direct request) -- navy top nav + teal left
+           sidebar, matching the reference dashboard's palette. Both
+           .navbar-default and .well are shared Bootstrap classes used
+           by EVERY tab/region's top nav and every sidebarPanel() in
+           the app, so this recolors the whole app at once rather than
+           just the US Company Profile tab. */
+        .navbar-default {
+          background:#123247; border-bottom:none; box-shadow:0 1px 3px rgba(0,0,0,0.18);
+        }
+        .navbar-default .navbar-brand { color:#FFFFFF; font-weight:700; }
         .navbar-default .navbar-nav > li > a {
-          font-size:13.5px; font-weight:600; color:#5D6D7E; padding-top:16px; padding-bottom:16px;
+          font-size:13.5px; font-weight:600; color:#AFC9D4; padding-top:16px; padding-bottom:16px;
           letter-spacing:0.01em; transition:color 0.15s ease;
         }
-        .navbar-default .navbar-nav > li > a:hover { color:#1B2631; background:transparent; }
+        .navbar-default .navbar-nav > li > a:hover { color:#FFFFFF; background:transparent; }
         .navbar-default .navbar-nav > .active > a,
         .navbar-default .navbar-nav > .active > a:hover,
         .navbar-default .navbar-nav > .active > a:focus {
-          color:#1B2631; background:transparent; box-shadow:inset 0 -2px 0 #2980B9;
+          color:#FFFFFF; background:transparent; box-shadow:inset 0 -2px 0 #4FD1C5;
         }
         .navbar-default .navbar-nav > .dropdown.hidden-region-tab { display:none !important; }
+        .navbar-default .navbar-nav > .open > a,
+        .navbar-default .navbar-nav > .open > a:hover,
+        .navbar-default .navbar-nav > .open > a:focus { color:#FFFFFF; background:#0D2635; }
+        .navbar-default .dropdown-menu { background:#123247; border:1px solid rgba(255,255,255,0.1); }
+        .navbar-default .dropdown-menu > li > a { color:#AFC9D4; }
+        .navbar-default .dropdown-menu > li > a:hover { color:#FFFFFF; background:#0D2635; }
+
+        /* Left sidebar -- every sidebarPanel() renders as a Bootstrap
+           .well; recolored to the same teal as the reference design,
+           with label/heading text switched to white for contrast
+           against it. Form controls (dropdowns, text inputs, sliders'
+           number chips) are left on their own light backgrounds --
+           only the surrounding panel and its text change. */
+        .well {
+          background:#1B7F98; border:none; border-radius:8px; color:#FFFFFF;
+          box-shadow:0 1px 3px rgba(0,0,0,0.12);
+        }
+        .well label, .well .control-label,
+        .well h3, .well h4, .well h5, .well h6,
+        .well b, .well strong, .well .radio label, .well .checkbox label {
+          color:#FFFFFF;
+        }
+        .well hr { border-top:1px solid rgba(255,255,255,0.25); }
+        .well .help-block, .well em { color:#D6ECF1; }
+
+        /* Modern \"card\" wrapper for chart panels (per direct request) --
+           white surface, soft rounded corners, a light shadow, and
+           breathing-room padding, instead of a plot sitting bare
+           against the page background. Purely visual; the plot inside
+           renders exactly as before. */
+        .chart-card {
+          background:#FFFFFF; border-radius:10px; padding:14px 16px 4px 16px;
+          margin-bottom:14px; box-shadow:0 1px 3px rgba(16,24,32,0.08), 0 1px 2px rgba(16,24,32,0.04);
+        }
+
+        /* Smooth chart updates: Shiny's own default behavior on every
+           plotOutput/tableOutput is to add a \"recalculating\" class the
+           instant a recompute starts and remove it the instant the new
+           result lands -- an abrupt, unanimated opacity jump, with the
+           swap to the actually-new image/plotly frame happening as a
+           hard, instantaneous replacement underneath it. Giving that
+           same opacity change a transition (instead of overriding
+           Shiny's own logic) turns that jump into a soft dim-then-
+           return-to-full fade around every chart, table, and the
+           interactive globe, any time a Calculate click or an input
+           change causes them to recompute -- at zero extra server or
+           network cost, since nothing about what gets computed or sent
+           changes, only how the existing state change is rendered. */
+        .shiny-plot-output, .shiny-image-output, .html-widget, .dataTables_wrapper {
+          transition: opacity 0.35s ease-in-out;
+        }
+        .shiny-plot-output.recalculating,
+        .shiny-image-output.recalculating,
+        .html-widget.recalculating,
+        .dataTables_wrapper.recalculating {
+          opacity: 0.3;
+        }
       ")),
       tags$script(HTML("
         // Hides the six regional navbarMenu items from the visible
@@ -2516,6 +3026,10 @@ ui <- navbarPage(
             if (hiddenRegions.indexOf(label) > -1) { $(this).addClass('hidden-region-tab'); }
           });
         });
+        // wizard_click_calculate handler REMOVED per direct request: every
+        // region's charts/tables now compute automatically (no more
+        // \"Calculate\" button to click at all, so there was nothing left
+        // for this handler to simulate a click on).
       "))
     ),
     tags$div(
@@ -2587,22 +3101,18 @@ ui <- navbarPage(
     sidebarLayout(
       sidebarPanel(
         width = 3,
+        sector_view_badge("United States -- 50 states, real GHGRP facility data"),
         selectInput(
           "sector_select", "Sector",
           choices  = sector_list,
           selected = sector_list[1]
         ),
         checkboxInput("show_target_sector", "Show target pathway", value = TRUE),
-        checkboxInput("show_forecast_sector", "Show model forecast", value = TRUE),
-        hr(),
-        helpText(
-          "Solid line: observed GHGRP emissions (2011-", last_hist_year, ").",
-          "Dashed line: model forecast (", last_hist_year + 1, "-", last_fore_year, ").",
-          "Dotted line: implied sector decarbonization target pathway, ",
-          "anchored at each facility's ", last_hist_year, " actual emissions."
-        ),
-        hr(),
-        uiOutput("target_meta_sector")
+        checkboxInput("show_forecast_sector", "Show model forecast", value = TRUE)
+        # Line-style legend helpText() and uiOutput("target_meta_sector")
+        # (the Target/Implied annual rate/Confidence/caveat box) both
+        # removed per direct request. output$target_meta_sector itself is
+        # left defined below (unused) to keep the diff minimal.
       ),
       mainPanel(
         width = 9,
@@ -2621,48 +3131,56 @@ ui <- navbarPage(
       conditionalPanel(
         condition = "output.eu_data_available",
         tabsetPanel(
-          tabPanel(
-            "Official EEA Sectors (historical)",
-            br(),
-            sidebarLayout(
-              sidebarPanel(
-                width = 3,
-                selectInput("eu_sector_select", "Sector (EEA official category)", choices = NULL),
-                helpText(em(
-                  "Read directly from the Air_Releases_Sector sheet -- the EEA's own ",
-                  "official rollup, not derived from facility-level activity codes."
-                )),
-                hr(),
-                uiOutput("eu_sector_meta")
-              ),
-              mainPanel(
-                width = 9,
-                uiOutput("eu_scope_note"),
-                plotOutput("eu_sector_plot", height = "440px"),
-                br(),
-                DTOutput("eu_sector_table")
-              )
-            )
-          ),
+          # ---- "Official EEA Sectors (historical)": REMOVED from Global
+          # Sector View per direct request. The server-side eu_sector_*
+          # outputs (eu_sector_hist/_meta/_stat_cards/_plot/_gap_plot/
+          # _table) are left in place, just unreferenced by any UI
+          # element -- re-add this tabPanel block to restore it.
+          # tabPanel(
+          #   "Official EEA Sectors (historical)",
+          #   br(),
+          #   sidebarLayout(
+          #     sidebarPanel(
+          #       width = 3,
+          #       sector_view_badge("Europe -- real EPRTR facility data, official EEA sector rollup"),
+          #       selectInput("eu_sector_select", "Sector (EEA official category)", choices = NULL),
+          #       helpText(em(
+          #         "Read directly from the Air_Releases_Sector sheet -- the EEA's own ",
+          #         "official rollup, not derived from facility-level activity codes."
+          #       )),
+          #       hr(),
+          #       uiOutput("eu_sector_meta")
+          #     ),
+          #     mainPanel(
+          #       width = 9,
+          #       uiOutput("eu_scope_note"),
+          #       uiOutput("eu_sector_stat_cards"),
+          #       plotOutput("eu_sector_plot", height = "440px"),
+          #       plotOutput("eu_sector_gap_plot", height = "160px"),
+          #       br(),
+          #       DTOutput("eu_sector_table")
+          #     )
+          #   )
+          # ),
           tabPanel(
             "Model Forecast by Sector",
             br(),
             sidebarLayout(
               sidebarPanel(
                 width = 3,
-                selectInput("eu_sector_bucket_select", "Sector (model's own grouping)", choices = NULL),
-                helpText(em(
-                  "The panel model's own sector grouping -- EPRTR Annex I activity codes, ",
-                  "bucketed to the ones with enough facilities for a real trend estimate. ",
-                  "NOT the same categories as the official EEA sectors on the other sub-tab."
-                )),
-                hr(),
-                uiOutput("eu_sector_bucket_meta")
+                sector_view_badge("Europe -- real EPRTR facility data, model's own sector grouping + forecast"),
+                selectInput("eu_sector_bucket_select", "Sector (model's own grouping)", choices = NULL)
+                # Explanatory helpText() and uiOutput("eu_sector_bucket_meta")
+                # (Facilities in this bucket / Years covered) both removed
+                # per direct request. output$eu_sector_bucket_meta itself
+                # is left defined below (unused) to keep the diff minimal.
               ),
               mainPanel(
                 width = 9,
                 uiOutput("eu_forecast_note"),
+                uiOutput("eu_sector_bucket_stat_cards"),
                 plotOutput("eu_sector_bucket_plot", height = "440px"),
+                plotOutput("eu_sector_bucket_gap_plot", height = "160px"),
                 br(),
                 DTOutput("eu_sector_bucket_table")
               )
@@ -2671,6 +3189,166 @@ ui <- navbarPage(
         )
       )
     )
+      ),
+      # ---- Asia: real sector rollup (India + Singapore) ----
+      # hist_by_sector_asia is summed Scope 1 by sector/year from the
+      # same real per-company panel the Company Profile tab uses --
+      # sectors with fewer than 3 reporting companies are already
+      # dropped in the pipeline (satya_carbon_v4_01_data_pipeline_asia.R,
+      # PART 5) so a "sector total" here never just republishes one
+      # company's own number.
+      tabPanel(
+        "Asia",
+        fluidPage(
+          if (!has_asia_data) {
+            tags$div(
+              style = "background:#FEF9E7; border:1px solid #F7DC6F; border-radius:8px; padding:0.8rem 1.2rem;",
+              tags$b("Asia data not available yet."), " Run satya_carbon_v4_01_data_pipeline_asia.R first."
+            )
+          } else {
+            sidebarLayout(
+              sidebarPanel(
+                width = 3,
+                sector_view_badge("India + Singapore, real company-reported data"),
+                selectInput("asia_sector_view_select", "Sector", choices = NULL)
+                # Explanatory helpText() and uiOutput("asia_sector_view_meta")
+                # (Reporting companies / Years covered) both removed per
+                # direct request. output$asia_sector_view_meta itself is
+                # left defined below (unused) to keep the diff minimal.
+              ),
+              mainPanel(
+                width = 9,
+                uiOutput("asia_sector_view_stat_cards"),
+                plotOutput("asia_sector_view_plot", height = "440px"),
+                plotOutput("asia_sector_view_gap_plot", height = "160px"),
+                br(),
+                DTOutput("asia_sector_view_table")
+              )
+            )
+          }
+        )
+      ),
+      # ---- Africa: TEMPORARILY REMOVED from Global Sector View, per
+      # direct request, while the South Africa source data is being
+      # redone (the 2018 single-year CDP snapshot currently backing it
+      # is being replaced with a fuller 2014-2018 historical file).
+      # Africa's Company Profile tab is untouched -- only this Sector
+      # View sub-tab is hidden. The server-side africa_sector_view_*
+      # outputs below are also left commented out; re-add both blocks
+      # together to restore this tab once the new data is in.
+      # tabPanel(
+      #   "Africa",
+      #   fluidPage(
+      #     if (!has_africa_data) {
+      #       tags$div(
+      #         style = "background:#FEF9E7; border:1px solid #F7DC6F; border-radius:8px; padding:0.8rem 1.2rem;",
+      #         tags$b("Africa data not available yet."), " Run satya_carbon_v4_01_data_pipeline_africa.R first."
+      #       )
+      #     } else {
+      #       sidebarLayout(
+      #         sidebarPanel(
+      #           width = 3,
+      #           sector_view_badge("South Africa, real CDP-disclosed data"),
+      #           selectInput("africa_sector_view_select", "Sector", choices = NULL),
+      #           helpText(em(
+      #             "South Africa, real CDP-disclosed company emissions, 2018 single-year snapshot, ",
+      #             "summed by sector. Sectors with fewer than 3 reporting companies are omitted so no ",
+      #             "sector total discloses a single company's own figure."
+      #           )),
+      #           hr(),
+      #           uiOutput("africa_sector_view_meta")
+      #         ),
+      #         mainPanel(
+      #           width = 9,
+      #           plotOutput("africa_sector_view_plot", height = "380px"),
+      #           br(),
+      #           DTOutput("africa_sector_view_table")
+      #         )
+      #       )
+      #     }
+      #   )
+      # ),
+      # ---- Latin America (Chile & Brazil): real sector rollup, Brazil
+      # only ----
+      # Chile still has NO sector rollup: each of its 8 companies is
+      # alone in its own sector, so a "sector total" there would just
+      # republish that one company's own number under a different
+      # label. Brazil's real SASB/SICS sector classification DOES
+      # support one -- 11 sectors clear the >=3-reporting-companies
+      # floor (Infrastructure, Consumer Goods, Transportation, ... down
+      # to Health Care) -- so this tab now shows that real rollup,
+      # same shape as Asia's/Australia's sub-tabs, with a note making
+      # the Chile gap explicit rather than silently only showing
+      # Brazil.
+      tabPanel(
+        "Latin America",
+        fluidPage(
+          if (!has_chile_data) {
+            tags$div(
+              style = "background:#FEF9E7; border:1px solid #F7DC6F; border-radius:8px; padding:0.8rem 1.2rem;",
+              tags$b("Latin America data not available yet."), " Run satya_carbon_v4_01_data_pipeline_latam.R first."
+            )
+          } else {
+            sidebarLayout(
+              sidebarPanel(
+                width = 3,
+                sector_view_badge("Brazil, real company-reported data (Chile has no sector rollup)"),
+                selectInput("latam_sector_view_select", "Sector (Brazil, SASB/SICS)", choices = NULL)
+                # Explanatory helpText() and uiOutput("latam_sector_view_meta")
+                # (Reporting companies / Years covered) both removed per
+                # direct request. output$latam_sector_view_meta itself is
+                # left defined below (unused) to keep the diff minimal.
+              ),
+              mainPanel(
+                width = 9,
+                uiOutput("latam_sector_view_stat_cards"),
+                plotOutput("latam_sector_view_plot", height = "440px"),
+                plotOutput("latam_sector_view_gap_plot", height = "160px"),
+                br(),
+                DTOutput("latam_sector_view_table")
+              )
+            )
+          }
+        )
+      ),
+      # ---- Australia: real sector rollup (NGER, GICS-classified) ----
+      # Same shape as Asia's sub-tab -- a genuine 3-year trend (unlike
+      # Africa's single-year snapshot), summed real Scope 1 by GICS
+      # sector/year, straight from hist_by_sector_australia (already
+      # filtered to sectors with >=3 reporting companies in the
+      # pipeline itself). NGER's own table has no sector field --
+      # this is the externally-researched GICS mapping, not guessed.
+      tabPanel(
+        "Australia",
+        fluidPage(
+          if (!has_australia_data) {
+            tags$div(
+              style = "background:#FEF9E7; border:1px solid #F7DC6F; border-radius:8px; padding:0.8rem 1.2rem;",
+              tags$b("Australia data not available yet."), " Run satya_carbon_v4_01_data_pipeline_australia.R first."
+            )
+          } else {
+            sidebarLayout(
+              sidebarPanel(
+                width = 3,
+                sector_view_badge("Australia (NGER), real company-reported data"),
+                selectInput("australia_sector_view_select", "Sector (GICS)", choices = NULL)
+                # Explanatory helpText() and uiOutput("australia_sector_
+                # view_meta") (Reporting companies / Years covered) both
+                # removed per direct request. output$australia_sector_
+                # view_meta itself is left defined below (unused) to keep
+                # the diff minimal.
+              ),
+              mainPanel(
+                width = 9,
+                uiOutput("australia_sector_view_stat_cards"),
+                plotOutput("australia_sector_view_plot", height = "440px"),
+                plotOutput("australia_sector_view_gap_plot", height = "160px"),
+                br(),
+                DTOutput("australia_sector_view_table")
+              )
+            )
+          }
+        )
       )
     )
   ),
@@ -2707,25 +3385,69 @@ ui <- navbarPage(
     value = "us_company_profile",
     sidebarLayout(
       sidebarPanel(
-        width = 4,
-        radioButtons(
-          "intake_company_mode", "Company",
-          choices = c(
-            "Select an existing company" = "existing",
-            "Add a new company" = "new"
-          ),
-          selected = "new"
-        ),
+        width = 2,
+        # Header (per direct request) -- replaces the editable Sector
+        # picker as the way this info is shown: company name, its
+        # best-matching sector, and location, all read-only, right at
+        # the top of the sidebar.
+        uiOutput("intake_profile_header"),
+        # Company-vs-facility analysis level -- only shown once a real
+        # matched GHGRP company has more than one facility (a single-
+        # facility company has nothing to drill into: "whole company"
+        # and "one specific facility" are the same thing). Lets the
+        # entire tab -- and everything downstream that reads from it
+        # (the trend chart, the gap, and the Portfolio Mix/Curation
+        # Engine allocation) -- run at either the company's combined
+        # total or one specific facility's own real numbers, per direct
+        # request. output$intake_has_multi_facility_match is a plain
+        # boolean reactive (outputOptions(suspendWhenHidden = FALSE))
+        # so conditionalPanel can gate on it the same way eu_data_available
+        # already does elsewhere in this app.
         conditionalPanel(
-          condition = "input.intake_company_mode == 'existing'",
+          condition = "output.intake_has_multi_facility_match",
+          radioButtons(
+            "intake_analysis_level", "Analyze at the level of",
+            choices = c("Whole company (all facilities)" = "company", "One specific facility" = "facility"),
+            selected = "company"
+          ),
+          conditionalPanel(
+            condition = "input.intake_analysis_level == 'facility'",
+            selectizeInput(
+              "intake_facility_pick", "Facility",
+              choices = NULL, selected = NULL,
+              options = list(placeholder = "Choose a facility...")
+            )
+          ),
+          hr()
+        ),
+        # Single field: type a company name and it's matched against
+        # the real GHGRP dataset server-side as you type; no match
+        # found -> the typed text becomes a new company (selectize's
+        # own create=TRUE). Replaces the old "Select existing / Add
+        # new" radio choice. The hidden controls below it are kept in
+        # sync by an observer so every downstream reactive that reads
+        # input$intake_company_mode / _existing_picker / _new_name
+        # keeps working exactly as before.
+        # HIDDEN ENTIRELY (per direct request) -- the company is
+        # already chosen in the Global Portfolio wizard's first step,
+        # which syncs its pick into this same intake_company_mode/
+        # _existing_picker/_new_name machinery (see the observeEvent
+        # on input$wizard_step elsewhere in this server function), so
+        # asking for it again here is redundant. The input itself
+        # stays defined (still wired to server-side choices below) so
+        # that sync keeps working and every downstream reactive that
+        # reads it is unaffected -- only the visible box is gone.
+        tags$div(style = "display:none;",
           selectizeInput(
-            "intake_company_existing_picker", NULL,
+            "intake_company_match", NULL,
             choices = NULL, selected = NULL,
-            options = list(placeholder = "Select a company...")
+            options = list(create = TRUE)
           )
         ),
-        conditionalPanel(
-          condition = "input.intake_company_mode == 'new'",
+        tags$div(
+          style = "display:none;",
+          radioButtons("intake_company_mode", NULL, choices = c("existing", "new"), selected = "new"),
+          selectizeInput("intake_company_existing_picker", NULL, choices = NULL, selected = NULL),
           textInput("intake_company_new_name", NULL, placeholder = "Company / Facility Name")
         ),
         # Hidden, kept in sync with whichever of the two controls above is
@@ -2742,26 +3464,57 @@ ui <- navbarPage(
           style = "display:none;",
           selectInput("intake_facility_country", NULL, choices = c("United States" = "United States"), selected = "United States")
         ),
-        selectInput(
-          "intake_facility_state", "State",
-          choices = c("Not specified" = "", us_state_choices),
-          selected = ""
-        ),
-        selectInput(
-          "intake_facility_county", "County",
-          choices = c("Select a state first" = ""),
-          selected = ""
-        ),
-        selectInput(
-          "intake_sector", "Closest matching sector",
-          choices = sector_list, selected = sector_list[1]
+        # HIDDEN FOR A MATCHED COMPANY (per direct request) -- typing
+        # the company name in the first step already resolves State
+        # for a real GHGRP company (auto-populated by the match
+        # observer from its actual facility data); County was never
+        # backed by real data for a matched company anyway. Both are
+        # only meaningful for a genuine NEW company, where they're the
+        # only source of that info. Sector stays visible either way --
+        # per direct request, it's kept because it directly drives the
+        # chart/benchmark engine and is worth being able to see/adjust
+        # even for a matched company.
+        conditionalPanel(
+          condition = "input.intake_company_mode == 'new'",
+          selectInput(
+            "intake_facility_state", "State",
+            choices = c("Not specified" = "", us_state_choices),
+            selected = ""
           ),
+          selectInput(
+            "intake_facility_county", "County",
+            choices = c("Select a state first" = ""),
+            selected = ""
+          )
+        ),
+        # HIDDEN (per direct request) -- the sidebar no longer offers
+        # Sector as an editable control; the company name/sector/
+        # location header above is now the only place it's shown, as
+        # read-only text. The input itself stays defined and auto-
+        # synced on match (see the observeEvent above) so every
+        # downstream reactive that reads input$intake_sector (the
+        # trend chart, benchmark engine, get_scope23_ratio() calls,
+        # etc.) is completely unaffected -- only the visible dropdown
+        # is gone.
+        tags$div(style = "display:none;",
+          selectInput(
+            "intake_sector", "Closest matching sector",
+            choices = sector_list, selected = sector_list[1]
+          )
+        ),
+        # HIDDEN (per direct request) -- per "just Target Year and
+        # Target reduction as options for edition," this toggle is no
+        # longer exposed either; fixed at its original default (TRUE)
+        # so input$intake_show_forecast keeps behaving exactly as
+        # before for every reactive that reads it.
+        tags$div(style = "display:none;",
           checkboxInput(
             "intake_show_forecast",
             "Show model forecast (sector trend)",
             value = TRUE
-          ),
-          hr(),
+          )
+        ),
+        hr(),
           conditionalPanel(
             condition = "input.intake_company_mode == 'new'",
             # Per explicit request: companies are now assumed to always
@@ -2816,25 +3569,52 @@ ui <- navbarPage(
           # for a matched company; the target year is not.
           conditionalPanel(
             condition = "input.intake_has_data == 'yes'",
-            # Per explicit request: always use the custom Target
-            # Year/Reduction sliders -- the "use sector's published
-            # target" toggle is gone, hidden and fixed to FALSE (which
-            # was already its default), so the sliders below are now
-            # always shown rather than conditional on it.
+            # Explicit per direct request: ask whether the company has
+            # its OWN stated emissions target, rather than silently
+            # defaulting every company to the same generic 2030/30%
+            # sliders. "No" (the default) drives intake_target_pathway()
+            # to use the REAL, sector-specific industry-standard target
+            # from target_lookup (the same real per-sector target-year/
+            # reduction-fraction data already powering the "Industry-
+            # calculated goal" line on the trend chart) instead -- not a
+            # single hardcoded number, but whatever that sector's own
+            # real disclosed-target data says. intake_use_sector_target
+            # stays as the hidden boolean intake_target_pathway() itself
+            # reads, kept in sync by the observer below.
+            radioButtons(
+              "intake_has_own_target", "Does the company have its own stated emissions target?",
+              choices = c("Yes -- set it below" = "yes", "No -- use the industry standard" = "no"),
+              selected = "no"
+            ),
             tags$div(
               style = "display:none;",
-              checkboxInput("intake_use_sector_target", NULL, value = FALSE)
+              checkboxInput("intake_use_sector_target", NULL, value = TRUE)
             ),
-            sliderInput("intake_target_year", "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
-            sliderInput("intake_target_reduction", "Target reduction from baseline (%)",
-                        value = 30, min = 1, max = 100, step = 1, post = "%")
+            conditionalPanel(
+              condition = "input.intake_has_own_target == 'yes'",
+              sliderInput("intake_target_year", "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
+              sliderInput("intake_target_reduction", "Target reduction from baseline (%)",
+                          value = 30, min = 1, max = 100, step = 1, post = "%")
+            ),
+            conditionalPanel(
+              condition = "input.intake_has_own_target == 'no'",
+              uiOutput("intake_industry_target_note")
+            )
           ),
-          hr(),
-
           # ---- SBTi-specific controls -- everything else SBTi needs
           # (company name, historical emissions, target year) is already
           # entered above; this is only what has no NCI equivalent. ----
-          tags$b("SBTi target-setting method"),
+          # REMOVED (per direct request): the "SBTi target-setting
+          # method" heading used to sit here, but every control under
+          # it is hidden/fixed now (method, net zero year, ambition
+          # level are all single-choice-only per earlier requests), so
+          # it was a bold label sitting over nothing visible -- pure
+          # clutter. The divider (hr()) that used to precede it is
+          # dropped too, since with nothing visible left in this
+          # section it would otherwise just be a second divider right
+          # on top of the one before Calculate, with empty space
+          # between. The hidden inputs below still exist unchanged;
+          # only the visible heading + extra divider are gone.
           tags$div(
             style = "display:none;",
             textInput("sbti_calc_company", NULL, value = ""),
@@ -2893,27 +3673,32 @@ ui <- navbarPage(
               choices = c("1.5C" = "1.5C"),
               selected = "1.5C"
             )
-          ),
-          hr(),
-          actionButton("intake_calculate", "Calculate", class = "btn-primary", width = "100%", icon = icon("play"))
+          )
       ),
       mainPanel(
-        width = 8,
+        width = 10,
+          region_switcher_ui("us_company_profile", "us_portfolio_mix", "cp"),
+          # MODERNIZED (per direct request) -- each chart wrapped in a
+          # plain "card" (white background, soft rounded corners, subtle
+          # shadow, breathing-room padding) instead of sitting bare
+          # against the page background, for a more contemporary look.
+          # Purely a CSS wrapper around the existing plotOutput()s --
+          # no chart, data, or reactive logic changes.
           tabsetPanel(
             tabPanel(
               "Scope 1",
               br(),
-              plotOutput("intake_plot", height = "460px"),
-              plotOutput("intake_level_bar_s1_plot", height = "340px"),
-              plotOutput("intake_gap_s1_plot", height = "220px")
+              tags$div(class = "chart-card", plotOutput("intake_plot", height = "460px")),
+              tags$div(class = "chart-card", plotOutput("intake_level_bar_s1_plot", height = "340px")),
+              tags$div(class = "chart-card", plotOutput("intake_gap_s1_plot", height = "220px"))
             ),
             tabPanel(
               "Scope 2",
               br(),
               uiOutput("intake_scope2_header"),
-              plotOutput("intake_plot_s2", height = "400px"),
-              plotOutput("intake_level_bar_s2_plot", height = "340px"),
-              plotOutput("intake_gap_s2_plot", height = "220px")
+              tags$div(class = "chart-card", plotOutput("intake_plot_s2", height = "400px")),
+              tags$div(class = "chart-card", plotOutput("intake_level_bar_s2_plot", height = "340px")),
+              tags$div(class = "chart-card", plotOutput("intake_gap_s2_plot", height = "220px"))
             ),
             tabPanel(
               "Scope 3",
@@ -2923,9 +3708,9 @@ ui <- navbarPage(
                 tabPanel(
                   "Trend",
                   br(),
-                  plotOutput("intake_plot_s3", height = "400px"),
-                  plotOutput("intake_level_bar_s3_plot", height = "340px"),
-                  plotOutput("intake_gap_s3_plot", height = "220px")
+                  tags$div(class = "chart-card", plotOutput("intake_plot_s3", height = "400px")),
+                  tags$div(class = "chart-card", plotOutput("intake_level_bar_s3_plot", height = "340px")),
+                  tags$div(class = "chart-card", plotOutput("intake_gap_s3_plot", height = "220px"))
                 ),
                 tabPanel(
                   "Category Breakdown",
@@ -2942,25 +3727,26 @@ ui <- navbarPage(
                 )
               )
             ),
-            tabPanel(
-              "SBTi Detail",
-              br(),
-              uiOutput("sbti_derived_readout"),
-              br(),
-              uiOutput("sbti_calc_error"),
-              plotOutput("sbti_calc_plot", height = "440px"),
-              br(),
-              uiOutput("sbti_calc_scope3_note"),
-              DTOutput("sbti_calc_table")
-            ),
+            # "SBTi Detail" tabPanel removed per direct request. The
+            # underlying nci_derived_sbti() reactive, its observe() sync
+            # into the hidden sbti_calc_* inputs, and the sbti_calc_plot/
+            # sbti_calc_table/sbti_calc_error/sbti_calc_scope3_note
+            # outputs themselves are all left untouched (other tabs/charts
+            # -- e.g. the "SBTi-calculated goal" trend line on Scope 1/2/3
+            # -- read the same underlying SBTi machinery), only this
+            # dedicated subtab is gone.
             tabPanel(
               "Facilities",
               br(),
               uiOutput("intake_facilities_content")
             )
-          ),
-          br(),
-          DTOutput("intake_table")
+          )
+          # DTOutput("intake_table") (the year/target/sector_avg/
+          # sector_forecast/your_data/your_forecast table that used to
+          # sit below the tabsetPanel, visible under every subtab
+          # including Facilities) removed per direct request --
+          # output$intake_table itself is left defined below (unused)
+          # to keep the diff minimal.
       )
     )
   ),
@@ -2977,6 +3763,7 @@ ui <- navbarPage(
   # the interface needed it to be usable.
   tabPanel(
     "Portfolio Mix",
+    value = "us_portfolio_mix",
     sidebarLayout(
       sidebarPanel(
         width = 2,
@@ -2997,25 +3784,40 @@ ui <- navbarPage(
         numericInput("pme_wt_comm_avoid", "Community-based avoidance", value = 20, min = 0, max = 100, step = 5),
         hr(),
         tags$b("Methodology-level detail (below)"),
-        sliderInput(
-          "pce_preference_strength", "Respect stated mix vs. minimize gap",
-          min = 0, max = 100, value = 30, step = 5, post = "%"
+        # "Respect stated mix vs. minimize gap" slider (pce_preference_
+        # strength) removed per direct request. The input itself stays
+        # defined below (hidden, fixed at its original default of 30)
+        # so every downstream reactive that reads
+        # input$pce_preference_strength keeps working unchanged.
+        tags$div(style = "display:none;",
+          sliderInput(
+            "pce_preference_strength", "Respect stated mix vs. minimize gap",
+            min = 0, max = 100, value = 30, step = 5, post = "%"
+          )
         ),
         sliderInput(
           "pce_bucket_cap", "Max share from any one bucket",
           min = 20, max = 100, value = 45, step = 5, post = "%"
         ),
-        selectInput(
-          "pce_claim_tier", "Claim tier (minimum coverage floor)",
-          choices = c("None" = "none", "Silver (10%)" = "silver", "Gold (50%)" = "gold", "Platinum (100%)" = "platinum"),
-          selected = "none"
+        # "Claim tier (minimum coverage floor)" removed entirely per
+        # direct request. Hidden rather than deleted, fixed at its
+        # original default ("none"), so input$pce_claim_tier keeps
+        # working unchanged for every downstream reactive that reads it
+        # (including the "Claim tier not met" messaging elsewhere).
+        tags$div(style = "display:none;",
+          selectInput(
+            "pce_claim_tier", "Claim tier (minimum coverage floor)",
+            choices = c("None" = "none", "Silver (10%)" = "silver", "Gold (50%)" = "gold", "Platinum (100%)" = "platinum"),
+            selected = "none"
+          )
         ),
         hr(),
-        uiOutput("pme_facility_readout"),
         sliderInput(
           "pme_proximity_weight", "Prioritize projects near the facility",
           min = 0, max = 100, value = 0, step = 5, post = "%"
         ),
+        hr(),
+        geo_preference_ui("pce"),
         hr(),
         sliderInput(
           "pme_forward_discount", "Forward pricing discount (5-Year tab only)",
@@ -3024,7 +3826,9 @@ ui <- navbarPage(
       ),
       mainPanel(
         width = 10,
+        region_switcher_ui("us_company_profile", "us_portfolio_mix", "pm"),
         tabsetPanel(
+          id = "us_pm_tabset",
           tabPanel(
             "Short Term: 1-Year Optimal Portfolio",
             tags$div(style = "height:10px;"),
@@ -3074,6 +3878,7 @@ ui <- navbarPage(
           ),
           tabPanel(
             "Methodologies",
+            value = "us_methodologies",
             tags$div(style = "height:10px;"),
             DTOutput("pce_table"),
             uiOutput("pce_adjusted_summary"),
@@ -3151,14 +3956,16 @@ ui <- navbarPage(
   # Same real-company-matching pattern as the US Company Profile:
   # typing an existing company auto-populates its real EU data instead
   # of requiring manual re-entry, one shared field for existing-or-new,
-  # facilities nested beneath their parent company. Deliberately
-  # narrower than the US version in exactly the places EU data doesn't
-  # support: Scope 1 only (no Hertwich & Wood-style Scope 2/3 ratio
-  # system built for EU sectors), and no SBTi/sector-target calculator
-  # (no real EU sector-targets workbook exists -- see the pipeline
-  # script's own header). A company CAN still set its own aspirational
-  # target here -- that's the company's own choice, not a sourced
-  # regulatory number, so it's not the same kind of fabrication.
+  # facilities nested beneath their parent company. Now has Scope 2/3
+  # too (per direct request), via the same Hertwich & Wood (2018)
+  # ratio-based estimate as the US tab -- see get_scope23_ratio_eu().
+  # Still narrower than the US version in one place EU data genuinely
+  # doesn't support: no SBTi/sector-target calculator per scope (no
+  # real EU sector-targets workbook exists -- see the pipeline
+  # script's own header), so SBTi stays Scope-1-only here. A company
+  # CAN still set its own aspirational target for every scope -- that's
+  # the company's own choice, not a sourced regulatory number, so it's
+  # not the same kind of fabrication.
   tabPanel(
     "Company Profile",
     value = "eu_company_profile",
@@ -3168,22 +3975,31 @@ ui <- navbarPage(
         condition = "output.eu_data_available",
         sidebarLayout(
           sidebarPanel(
-            width = 4,
-            radioButtons(
-              "eu_cp_mode", "Company",
-              choices = c("Select an existing company" = "existing", "Add a new company" = "new"),
-              selected = "new"
-            ),
-            conditionalPanel(
-              condition = "input.eu_cp_mode == 'existing'",
+            width = 2,
+            # MATCHED TO THE US TAB (per direct request, US being the
+            # main reference going forward) -- header shows company/
+            # sector/location as read-only text; the Company field, the
+            # Sector dropdown, and the width itself all follow the same
+            # treatment already applied on US Company Profile.
+            uiOutput("eu_cp_profile_header"),
+            # HIDDEN ENTIRELY (per direct request, same as US) -- the
+            # company is already chosen on the Global Portfolio
+            # wizard's first step, which syncs into eu_cp_existing_
+            # picker/_new_name/_country/_sector below (see the
+            # observeEvent on input$wizard_step). The input stays
+            # defined so that sync keeps working; only the visible box
+            # is gone.
+            tags$div(style = "display:none;",
               selectizeInput(
-                "eu_cp_existing_picker", NULL,
+                "eu_cp_match", "Company",
                 choices = NULL, selected = NULL,
-                options = list(placeholder = "Select a company...")
+                options = list(create = TRUE, placeholder = "Type a company name -- matches an existing one, or adds it as new")
               )
             ),
-            conditionalPanel(
-              condition = "input.eu_cp_mode == 'new'",
+            tags$div(
+              style = "display:none;",
+              radioButtons("eu_cp_mode", NULL, choices = c("existing", "new"), selected = "new"),
+              selectizeInput("eu_cp_existing_picker", NULL, choices = NULL, selected = NULL),
               textInput("eu_cp_new_name", NULL, placeholder = "Company / Facility Name")
             ),
             tags$div(style = "display:none;", textInput("eu_cp_company_name", NULL, value = "")),
@@ -3191,17 +4007,25 @@ ui <- navbarPage(
               condition = "input.eu_cp_mode == 'new'",
               selectInput("eu_cp_country", "Company location (country)",
                           choices = c("Not specified" = "", country_list_eu), selected = ""),
-              selectInput("eu_cp_sector", "Closest matching sector (model grouping)",
-                          choices = sector_bucket_list_eu, selected = sector_bucket_list_eu[1]),
+              # HIDDEN (per direct request, same as US) -- Sector is no
+              # longer an editable control anywhere in the sidebar; the
+              # header above is now the only place it's shown, as
+              # read-only text. Stays defined/auto-synced on match so
+              # every downstream reactive that reads input$eu_cp_sector
+              # is unaffected.
+              tags$div(style = "display:none;",
+                selectInput("eu_cp_sector", "Closest matching sector (model grouping)",
+                            choices = eu_sector_bucket_choices(sector_bucket_list_eu), selected = sector_bucket_list_eu[1])
+              ),
               hr(),
               # Per the same simplification applied to the US tab:
               # companies are assumed to always have Scope 1 data, so
               # the "do you have data?" question is gone -- hidden,
-              # fixed to "yes". EU has no Scope 2/3 ratio system, so
-              # only one scope's data ever applies here.
+              # fixed to "yes".
               tags$div(
                 style = "display:none;",
-                radioButtons("eu_cp_has_data", NULL, choices = c("yes" = "yes"), selected = "yes")
+                radioButtons("eu_cp_has_data", NULL, choices = c("yes" = "yes"), selected = "yes"),
+                radioButtons("eu_cp_has_data_s23", NULL, choices = c("yes" = "yes"), selected = "yes")
               ),
               tags$div(
                 style = "background:#F4F6F7; border-radius:6px; padding:0.7rem 1rem; margin-bottom:12px;",
@@ -3220,6 +4044,19 @@ ui <- navbarPage(
                 textAreaInput(
                   "eu_cp_emissions_csv", "Historical emissions (tCO2e) -- Scope 1 (approx.)",
                   rows = 6, placeholder = "2021,125000\n2022,118000\n2023,110500"
+                ),
+                # Optional real Scope 2/3 data (per direct request, same
+                # as the US tab) -- entirely optional; when empty,
+                # Scope 2/3 fall back to the Hertwich & Wood ratio
+                # estimate (get_scope23_ratio_eu()). Populated by the
+                # Excel upload's Scope 2/Scope 3 columns, same as Scope 1.
+                textAreaInput(
+                  "eu_cp_emissions_csv_s2", "Historical emissions (tCO2e) -- Scope 2",
+                  rows = 4, placeholder = "2021,18000\n2022,17200\n2023,16100"
+                ),
+                textAreaInput(
+                  "eu_cp_emissions_csv_s3", "Historical emissions (tCO2e) -- Scope 3",
+                  rows = 4, placeholder = "2021,135000\n2022,128000\n2023,119000"
                 )
               )
             ),
@@ -3235,21 +4072,49 @@ ui <- navbarPage(
             sliderInput("eu_cp_target_year", "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
             sliderInput("eu_cp_target_reduction", "Target reduction from baseline (%)",
                         value = 30, min = 1, max = 100, step = 1, post = "%"),
-            helpText(em("This is the company's own aspirational target -- not a sourced sector or regulatory number.")),
-            hr(),
-            actionButton("eu_cp_calculate", "Calculate", class = "btn-primary", width = "100%", icon = icon("play"))
+            helpText(em("This is the company's own aspirational target -- not a sourced sector or regulatory number."))
           ),
           mainPanel(
-            width = 8,
+            width = 10,
+            region_switcher_ui("eu_company_profile", "eu_portfolio_mix", "cp"),
             tabsetPanel(
               tabPanel(
                 "Scope 1",
                 br(),
                 uiOutput("eu_cp_scope_note"),
-                plotOutput("eu_cp_trend_plot", height = "460px"),
+                tags$div(class = "chart-card", plotOutput("eu_cp_trend_plot", height = "460px")),
+                tags$div(class = "chart-card", plotOutput("eu_cp_level_bar_s1", height = "340px")),
+                tags$div(class = "chart-card", plotOutput("eu_cp_gap_bar_s1", height = "260px")),
                 br(),
                 DTOutput("eu_cp_table")
               ),
+              # Scope 2/3 (per direct request, same approach as the US
+              # tab) -- ratio-based estimate from Scope 1 via
+              # get_scope23_ratio_eu(), or this scope's own real data
+              # when pasted/uploaded, exactly mirroring the US Company
+              # Profile's Scope 2/3 tabs.
+              tabPanel(
+                "Scope 2",
+                br(),
+                uiOutput("eu_cp_scope2_header"),
+                tags$div(class = "chart-card", plotOutput("eu_cp_trend_plot_s2", height = "400px")),
+                tags$div(class = "chart-card", plotOutput("eu_cp_level_bar_s2", height = "340px")),
+                tags$div(class = "chart-card", plotOutput("eu_cp_gap_bar_s2", height = "220px"))
+              ),
+              tabPanel(
+                "Scope 3",
+                br(),
+                uiOutput("eu_cp_scope3_header"),
+                tags$div(class = "chart-card", plotOutput("eu_cp_trend_plot_s3", height = "400px")),
+                tags$div(class = "chart-card", plotOutput("eu_cp_level_bar_s3", height = "340px")),
+                tags$div(class = "chart-card", plotOutput("eu_cp_gap_bar_s3", height = "220px"))
+              ),
+              # "SBTi Detail" tabPanel removed per direct request, same as
+              # the US Company Profile tab -- eu_cp_sbti_error/eu_cp_sbti_
+              # plot/eu_cp_sbti_table and the underlying SBTi reactive are
+              # left untouched (other charts, e.g. the "SBTi-calculated
+              # goal" trend line, still read the same machinery); only
+              # this dedicated subtab is gone.
               tabPanel(
                 "Facilities",
                 br(),
@@ -3271,65 +4136,134 @@ ui <- navbarPage(
   # instead of the US one, and per explicit request, the map pairing
   # is EU country + world (not US state/county + world) -- both maps
   # shown together, same pattern as the US tab.
-  # Deliberately simpler than the US version: one tab, not five --
-  # bucket-preference weighting is uniform (no per-bucket slider panel
-  # duplicated here) and there's no Scope 3 category-capping, since
-  # neither concept exists for EU data yet. Real LP optimization, real
-  # proximity scoring, real maps -- just a narrower sidebar.
+  # Deliberately simpler than the US version: one tab, not five, and
+  # there's no Scope 3 category-capping, since that concept doesn't
+  # exist for EU data yet. The sidebar now matches the US tab's
+  # structure (header, Relative preference weight sliders, Methodology-
+  # level detail) and the bucket-preference weighting is genuinely wired
+  # into the allocator (see eu_run_lp_alloc()), same as the US tab, per
+  # direct request. Real LP optimization, real proximity scoring, real
+  # maps -- just a narrower sidebar.
   tabPanel(
     "Portfolio Mix",
+    value = "eu_portfolio_mix",
     fluidPage(
       uiOutput("eu_pm_data_status"),
       conditionalPanel(
         condition = "output.eu_data_available",
         sidebarLayout(
           sidebarPanel(
-            width = 3,
-            uiOutput("eu_pm_company_readout"),
+            width = 2,
+            uiOutput("eu_pm_sidebar_header"),
             hr(),
-            numericInput("eu_pm_gap_tons", "Emissions gap to cover (tCO2e)", value = 100000, min = 0),
-            helpText(em("Defaults to the active EU company's forecast for the selected year, if one is set on EU Company Profile -- override freely.")),
-            selectInput("eu_pm_gap_year", "Gap year", choices = 2025:2029, selected = 2025),
-            numericInput("eu_pm_budget", "Annual budget ($)", value = 500000, min = 0),
+            selectInput("eu_pm_gap_year", "Year to size portfolio for", choices = 2025:2029, selected = 2025),
+            selectInput("eu_pm_gap_source", "Size portfolio against",
+                        choices = c("Your Stated Goal" = "own", "SBTi Target" = "sbti"), selected = "sbti"),
+            numericInput("eu_pm_budget", "Annual credit budget ($)", value = 500000, min = 0),
+            # "Emissions gap to cover (tCO2e)" manual override removed from
+            # view per direct request (match the US sidebar's structure --
+            # US never exposes the raw gap number either, it's derived
+            # from Year + Size-portfolio-against alone). Hidden rather
+            # than deleted: the existing auto-populate observer below
+            # still keeps it in sync whenever the year/scenario change,
+            # so eu_pm_alloc()/input$eu_pm_gap_tons keep working unchanged.
+            tags$div(style = "display:none;",
+              numericInput("eu_pm_gap_tons", "Emissions gap to cover (tCO2e)", value = 100000, min = 0)
+            ),
+            tags$b("Relative preference weight"),
+            numericInput("eu_pm_wt_nat_avoid", "Nature-based avoidance", value = 25, min = 0, max = 100, step = 5),
+            numericInput("eu_pm_wt_nat_removal", "Nature-based removal", value = 20, min = 0, max = 100, step = 5),
+            numericInput("eu_pm_wt_tech_avoid", "Technology-based avoidance", value = 15, min = 0, max = 100, step = 5),
+            numericInput("eu_pm_wt_tech_removal", "Technology-based removal", value = 20, min = 0, max = 100, step = 5),
+            numericInput("eu_pm_wt_comm_avoid", "Community-based avoidance", value = 20, min = 0, max = 100, step = 5),
             hr(),
-            sliderInput("eu_pm_proximity_weight", "Proximity weight (%)", value = 20, min = 0, max = 60, step = 5),
-            sliderInput("eu_pm_bucket_cap", "Max share per methodology bucket (%)", value = 30, min = 10, max = 100, step = 5),
-            selectInput("eu_pm_claim_tier", "Minimum coverage floor",
-                        choices = c("None" = "none", "Silver (10%)" = "silver", "Gold (50%)" = "gold", "Platinum (100%)" = "platinum"),
-                        selected = "none")
+            tags$b("Methodology-level detail (below)"),
+            # "Respect stated mix vs. minimize gap" -- same as the US tab:
+            # hidden, fixed at its original default, still feeds the real
+            # allocator (see eu_run_lp_alloc()'s alpha).
+            tags$div(style = "display:none;",
+              sliderInput(
+                "eu_pce_preference_strength", "Respect stated mix vs. minimize gap",
+                min = 0, max = 100, value = 30, step = 5, post = "%"
+              )
+            ),
+            sliderInput("eu_pm_bucket_cap", "Max share from any one bucket", value = 30, min = 10, max = 100, step = 5),
+            # "Claim tier (minimum coverage floor)" -- removed from view,
+            # same as the US tab: hidden, fixed at "none", still read by
+            # eu_run_lp_alloc()'s tier_min_frac.
+            tags$div(style = "display:none;",
+              selectInput("eu_pm_claim_tier", "Claim tier (minimum coverage floor)",
+                          choices = c("None" = "none", "Silver (10%)" = "silver", "Gold (50%)" = "gold", "Platinum (100%)" = "platinum"),
+                          selected = "none")
+            ),
+            hr(),
+            sliderInput("eu_pm_proximity_weight", "Prioritize projects near the facility", value = 20, min = 0, max = 60, step = 5),
+            hr(),
+            geo_preference_ui("eu_pce"),
+            hr(),
+            sliderInput("eu_pm_forward_discount", "Forward pricing discount (5-Year tab only)", value = 0, min = 0, max = 30, step = 5, post = "%")
           ),
           mainPanel(
-            width = 9,
-            uiOutput("eu_pm_context"),
-            uiOutput("eu_pm_stat_cards"),
-            uiOutput("eu_pm_capital_needed"),
-            uiOutput("eu_pm_progress_bar"),
-            uiOutput("eu_pm_close_gap_suggestion"),
-            br(),
-            h5("By methodology category"),
-            fluidRow(
-              column(width = 6, plotOutput("eu_pm_category_plot", height = "300px")),
-              column(width = 6, plotOutput("eu_pm_spend_pie", height = "300px"))
-            ),
-            hr(),
-            h5("By individual project"),
-            fluidRow(
-              column(width = 6, plotOutput("eu_pm_tons_plot", height = "270px")),
-              column(width = 6, plotOutput("eu_pm_spend_plot", height = "270px"))
-            ),
-            hr(),
-            h5("Where the active company is, and where these projects are"),
-            fluidRow(
-              column(
-                width = 6,
-                tags$b("Europe (zoomed)"),
-                plotOutput("eu_pm_map_eu", height = "420px")
+            width = 10,
+            region_switcher_ui("eu_company_profile", "eu_portfolio_mix", "pm"),
+            tabsetPanel(
+              id = "eu_pm_tabset",
+              tabPanel(
+                "Short Term: 1-Year Optimal Portfolio",
+                tags$div(style = "height:10px;"),
+                uiOutput("eu_pm_context"),
+                uiOutput("eu_pm_stat_cards"),
+                uiOutput("eu_pm_capital_needed"),
+                uiOutput("eu_pm_progress_bar"),
+                uiOutput("eu_pm_close_gap_suggestion"),
+                br(),
+                h5("By methodology category"),
+                fluidRow(
+                  column(width = 6, plotOutput("eu_pm_category_plot", height = "300px")),
+                  column(width = 6, plotOutput("eu_pm_spend_pie", height = "300px"))
+                ),
+                hr(),
+                h5("Where the active company is, and where these projects are"),
+                fluidRow(
+                  column(
+                    width = 6,
+                    tags$b("Europe (zoomed)"),
+                    plotOutput("eu_pm_map_eu", height = "420px")
+                  ),
+                  globe_panel_ui("eu_pm_map_world_wrapper")
+                ),
+                hr(),
+                h5("Full breakdown, by project"),
+                DTOutput("eu_pm_table")
               ),
-              globe_panel_ui("eu_pm_map_world_wrapper")
-            ),
-            hr(),
-            h5("Full breakdown, by project"),
-            DTOutput("eu_pm_table")
+              tabPanel(
+                "Long Term: 5-Year Optimal Portfolio",
+                tags$div(style = "height:10px;"),
+                uiOutput("eu_pm_forward_discount_readout"),
+                uiOutput("eu_pm_5yr_summary"),
+                h5("By methodology category"),
+                fluidRow(
+                  column(width = 6, plotOutput("eu_pm_5yr_category_plot", height = "300px")),
+                  column(width = 6, plotOutput("eu_pm_5yr_spend_pie", height = "300px"))
+                )
+              ),
+              tabPanel(
+                "Methodologies",
+                tags$div(style = "height:10px;"),
+                tags$p(em("The project catalog is shared across every region, not EU-specific -- edited in one place to avoid two tabs disagreeing about the same underlying data.")),
+                actionButton("eu_pm_go_to_methodologies", "Open the shared Methodologies tab \u2192", class = "btn-primary")
+              ),
+              tabPanel(
+                "Internal: Demand Trends",
+                internal_gate(
+                  tags$div(style = "height:10px;"),
+                  uiOutput("eu_pm_demand_note"),
+                  plotOutput("eu_pm_demand_plot", height = "320px"),
+                  br(),
+                  DTOutput("eu_pm_demand_table")
+                )
+              )
+            )
           )
         )
       )
@@ -3348,11 +4282,10 @@ ui <- navbarPage(
     if (has_chile_data) chile_real_cp_tab_ui() else synthetic_cp_tab_ui("latam", c("Brazil", "Chile")),
     tabPanel(
     "Portfolio Mix",
+    value = "latam_portfolio_mix",
     fluidPage(
-      tabsetPanel(
-        tabPanel(
-          "Country View",
-          fluidPage(
+      region_switcher_ui("latam_company_profile", "latam_portfolio_mix", "pm"),
+      fluidPage(
             sidebarLayout(
               sidebarPanel(
                 width = 3,
@@ -3368,8 +4301,8 @@ ui <- navbarPage(
                     ),
                     conditionalPanel(
                       condition = "input.latam_pm_gap_mode == 'profile'",
-                      selectizeInput("latam_pm_gap_company", "Company (Chile only -- Brazil is still synthetic)",
-                                      choices = c("Type to search..." = "", chile_company_choices),
+                      selectizeInput("latam_pm_gap_company", "Company (Chile or Brazil, real data)",
+                                      choices = NULL,
                                       options = list(placeholder = "Type to search...")),
                       sliderInput("latam_pm_gap_target_year", "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
                       sliderInput("latam_pm_gap_target_reduction", "Target reduction from baseline (%)",
@@ -3379,18 +4312,20 @@ ui <- navbarPage(
                         choices = c("Your Own Goal" = "own", "SBTi Target" = "sbti"),
                         selected = "sbti"
                       ),
-                      helpText(em("No \"Industry Target\" option -- every Chilean company here is in its own distinct sector, so no cross-company benchmark exists.")),
+                      helpText(em("No \"Industry Target\" option here yet -- Brazil's real sector rollup (see Global Sector View) isn't wired into this gap-sizing scenario yet; Chile's companies are each in their own distinct sector regardless.")),
                       actionButton("latam_pm_gap_apply", "Use this gap", class = "btn-primary", width = "100%"),
                       uiOutput("latam_pm_gap_company_status")
                     )
                   )
                 },
                 numericInput("latam_pm_gap_mt", "Emissions gap to cover (Mt CO2e)", value = 10, min = 0),
-                helpText(em("Auto-suggested as 10% of the selected country's latest-year synthetic total -- override freely, or use \"From Company Profile\" above for a real Chilean company's own carbon deficit.")),
+                helpText(em("Auto-suggested as 10% of the selected country's latest-year synthetic total -- override freely, or use \"From Company Profile\" above for a real Chilean or Brazilian company's own carbon deficit.")),
                 numericInput("latam_pm_budget", "Annual budget ($)", value = 1000000, min = 0),
                 hr(),
                 sliderInput("latam_pm_proximity_weight", "Proximity weight (%)", value = 20, min = 0, max = 60, step = 5),
-                sliderInput("latam_pm_bucket_cap", "Max share per methodology bucket (%)", value = 30, min = 10, max = 100, step = 5)
+                sliderInput("latam_pm_bucket_cap", "Max share per methodology bucket (%)", value = 30, min = 10, max = 100, step = 5),
+                hr(),
+                geo_preference_ui("latam_pm")
               ),
               mainPanel(
                 width = 9,
@@ -3424,68 +4359,6 @@ ui <- navbarPage(
                 DTOutput("latam_pm_table")
               )
             )
-          )
-        ),
-        tabPanel(
-          "Optimal Portfolio",
-          if (!has_chile_data) {
-            fluidPage(tags$p(em("Available once the Chile pipeline has real company data loaded.")))
-          } else {
-            fluidPage(
-              sidebarLayout(
-                sidebarPanel(
-                  width = 3,
-                  selectizeInput("chile_pce_company", "Company",
-                                  choices = c("Type to search..." = "", chile_company_choices),
-                                  options = list(placeholder = "Type to search...")),
-                  uiOutput("chile_pce_sizing_for"),
-                  sliderInput("chile_pce_target_year", "Year to size portfolio for", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
-                  radioButtons(
-                    "chile_pce_gap_scenario", "Size portfolio against",
-                    choices = c("Your Own Goal" = "own", "SBTi Target" = "sbti"),
-                    selected = "sbti"
-                  ),
-                  helpText(em("No \"Industry Target\" option -- every company here is alone in its own sector.")),
-                  sliderInput("chile_pce_target_reduction", "Target reduction from baseline (%) (for \"Your Own Goal\")",
-                              value = 30, min = 1, max = 100, step = 1, post = "%"),
-                  numericInput("chile_pce_budget", "Annual credit budget ($)", value = 50000, min = 0),
-                  hr(),
-                  h5("Relative preference weight"),
-                  sliderInput("chile_pce_wt_nat_avoid", "Nature-based avoidance", value = 20, min = 0, max = 100, step = 5),
-                  sliderInput("chile_pce_wt_nat_removal", "Nature-based removal", value = 20, min = 0, max = 100, step = 5),
-                  sliderInput("chile_pce_wt_tech_avoid", "Technology-based avoidance", value = 20, min = 0, max = 100, step = 5),
-                  sliderInput("chile_pce_wt_tech_removal", "Technology-based removal", value = 20, min = 0, max = 100, step = 5),
-                  sliderInput("chile_pce_wt_comm_avoid", "Community-based avoidance", value = 20, min = 0, max = 100, step = 5),
-                  uiOutput("chile_pce_normalized_readout"),
-                  hr(),
-                  sliderInput("chile_pce_proximity_weight", "Proximity weight (%)", value = 20, min = 0, max = 60, step = 5),
-                  sliderInput("chile_pce_bucket_cap", "Max share per methodology bucket (%)", value = 40, min = 10, max = 100, step = 5)
-                ),
-                mainPanel(
-                  width = 9,
-                  uiOutput("chile_pce_stat_cards"),
-                  uiOutput("chile_pce_capital_needed"),
-                  uiOutput("chile_pce_progress_bar"),
-                  uiOutput("chile_pce_close_gap_suggestion"),
-                  br(),
-                  fluidRow(
-                    column(width = 4, uiOutput("chile_pce_scope1_card")),
-                    column(width = 4, uiOutput("chile_pce_scope2_card")),
-                    column(width = 4, uiOutput("chile_pce_scope3_card"))
-                  ),
-                  br(),
-                  fluidRow(
-                    column(width = 6, plotOutput("chile_pce_category_plot", height = "320px")),
-                    column(width = 6, plotOutput("chile_pce_spend_pie", height = "320px"))
-                  ),
-                  hr(),
-                  h5("Full breakdown, by project"),
-                  DTOutput("chile_pce_table")
-                )
-              )
-            )
-          }
-        )
       )
     )
   )
@@ -3501,11 +4374,10 @@ ui <- navbarPage(
     if (has_asia_data) asia_real_cp_tab_ui() else synthetic_cp_tab_ui("asia", c("India", "Japan", "Singapore")),
     tabPanel(
     "Portfolio Mix",
+    value = "asia_portfolio_mix",
     fluidPage(
-      tabsetPanel(
-        tabPanel(
-          "Country View",
-          fluidPage(
+      region_switcher_ui("asia_company_profile", "asia_portfolio_mix", "pm"),
+      fluidPage(
             sidebarLayout(
               sidebarPanel(
                 width = 3,
@@ -3522,7 +4394,7 @@ ui <- navbarPage(
                     conditionalPanel(
                       condition = "input.asia_pm_gap_mode == 'profile'",
                       selectizeInput("asia_pm_gap_company", "Company",
-                                      choices = c("Type to search..." = "", asia_company_choices),
+                                      choices = NULL,
                                       options = list(placeholder = "Type to search...")),
                       sliderInput("asia_pm_gap_target_year", "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
                       sliderInput("asia_pm_gap_target_reduction", "Target reduction from baseline (%)",
@@ -3542,7 +4414,9 @@ ui <- navbarPage(
                 numericInput("asia_pm_budget", "Annual budget ($)", value = 1000000, min = 0),
                 hr(),
                 sliderInput("asia_pm_proximity_weight", "Proximity weight (%)", value = 20, min = 0, max = 60, step = 5),
-                sliderInput("asia_pm_bucket_cap", "Max share per methodology bucket (%)", value = 30, min = 10, max = 100, step = 5)
+                sliderInput("asia_pm_bucket_cap", "Max share per methodology bucket (%)", value = 30, min = 10, max = 100, step = 5),
+                hr(),
+                geo_preference_ui("asia_pm")
               ),
               mainPanel(
                 width = 9,
@@ -3576,69 +4450,6 @@ ui <- navbarPage(
                 DTOutput("asia_pm_table")
               )
             )
-          )
-        ),
-        tabPanel(
-          "Optimal Portfolio",
-          if (!has_asia_data) {
-            fluidPage(tags$p(em("Available once the Asia pipeline has real company data loaded.")))
-          } else {
-            fluidPage(
-              sidebarLayout(
-                sidebarPanel(
-                  width = 3,
-                  selectizeInput("asia_pce_company", "Company",
-                                  choices = c("Type to search..." = "", asia_company_choices),
-                                  options = list(placeholder = "Type to search...")),
-                  uiOutput("asia_pce_sizing_for"),
-                  sliderInput("asia_pce_target_year", "Year to size portfolio for", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
-                  radioButtons(
-                    "asia_pce_gap_scenario", "Size portfolio against",
-                    choices = c("Your Own Goal" = "own", "Industry Target" = "industry", "SBTi Target" = "sbti"),
-                    selected = "sbti"
-                  ),
-                  sliderInput("asia_pce_target_reduction", "Target reduction from baseline (%) (for \"Your Own Goal\")",
-                              value = 30, min = 1, max = 100, step = 1, post = "%"),
-                  numericInput("asia_pce_budget", "Annual credit budget ($)", value = 50000, min = 0),
-                  hr(),
-                  h5("Relative preference weight"),
-                  sliderInput("asia_pce_wt_nat_avoid", "Nature-based avoidance", value = 20, min = 0, max = 100, step = 5),
-                  sliderInput("asia_pce_wt_nat_removal", "Nature-based removal", value = 20, min = 0, max = 100, step = 5),
-                  sliderInput("asia_pce_wt_tech_avoid", "Technology-based avoidance", value = 20, min = 0, max = 100, step = 5),
-                  sliderInput("asia_pce_wt_tech_removal", "Technology-based removal", value = 20, min = 0, max = 100, step = 5),
-                  sliderInput("asia_pce_wt_comm_avoid", "Community-based avoidance", value = 20, min = 0, max = 100, step = 5),
-                  uiOutput("asia_pce_normalized_readout"),
-                  hr(),
-                  sliderInput("asia_pce_proximity_weight", "Proximity weight (%)", value = 20, min = 0, max = 60, step = 5),
-                  sliderInput("asia_pce_bucket_cap", "Max share per methodology bucket (%)", value = 40, min = 10, max = 100, step = 5)
-                ),
-                mainPanel(
-                  width = 9,
-                  uiOutput("asia_pce_stat_cards"),
-                  uiOutput("asia_pce_capital_needed"),
-                  uiOutput("asia_pce_progress_bar"),
-                  uiOutput("asia_pce_close_gap_suggestion"),
-                  br(),
-                  fluidRow(
-                    column(width = 4, uiOutput("asia_pce_scope1_card")),
-                    column(width = 4, uiOutput("asia_pce_scope2_card")),
-                    column(width = 4, uiOutput("asia_pce_scope3_card"))
-                  ),
-                  br(),
-                  fluidRow(
-                    column(width = 6, plotOutput("asia_pce_category_plot", height = "320px")),
-                    column(width = 6, plotOutput("asia_pce_spend_pie", height = "320px"))
-                  ),
-                  hr(),
-                  h5("Full breakdown, by project"),
-                  DTOutput("asia_pce_table"),
-                  hr(),
-                  tags$p(em("Scope 3 shown as one combined figure for now -- a full 15-category GHG Protocol breakdown (like the US tab's Coverage Audit) is a planned next step, not yet built for Asia."))
-                )
-              )
-            )
-          }
-        )
       )
     )
   )
@@ -3654,11 +4465,10 @@ ui <- navbarPage(
     if (has_australia_data) australia_real_cp_tab_ui() else synthetic_cp_tab_ui("au", c("Australia")),
     tabPanel(
     "Portfolio Mix",
+    value = "australia_portfolio_mix",
     fluidPage(
-      tabsetPanel(
-        tabPanel(
-          "Country View",
-          fluidPage(
+      region_switcher_ui(if (has_australia_data) "australia_company_profile" else "au_company_profile", "australia_portfolio_mix", "pm"),
+      fluidPage(
             sidebarLayout(
               sidebarPanel(
                 width = 3,
@@ -3674,17 +4484,17 @@ ui <- navbarPage(
                     conditionalPanel(
                       condition = "input.au_pm_gap_mode == 'profile'",
                       selectizeInput("au_pm_gap_company", "Company",
-                                      choices = c("Type to search..." = "", australia_company_choices),
+                                      choices = NULL,
                                       options = list(placeholder = "Type to search...")),
                       sliderInput("au_pm_gap_target_year", "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
                       sliderInput("au_pm_gap_target_reduction", "Target reduction from baseline (%)",
                                   value = 30, min = 1, max = 100, step = 1, post = "%"),
                       radioButtons(
                         "au_pm_gap_scenario", "Target scenario",
-                        choices = c("Your Own Goal" = "own", "SBTi Target" = "sbti"),
+                        choices = c("Your Own Goal" = "own", "Industry Target" = "industry", "SBTi Target" = "sbti"),
                         selected = "sbti"
                       ),
-                      helpText(em("No \"Industry Target\" option -- this source has no sector data to benchmark against.")),
+                      helpText(em("Industry Target uses the company's GICS sector median (Scope 1/2 only -- NGER has no Scope 3).")),
                       actionButton("au_pm_gap_apply", "Use this gap", class = "btn-primary", width = "100%"),
                       uiOutput("au_pm_gap_company_status")
                     )
@@ -3695,7 +4505,9 @@ ui <- navbarPage(
                 numericInput("au_pm_budget", "Annual budget ($)", value = 1000000, min = 0),
                 hr(),
                 sliderInput("au_pm_proximity_weight", "Proximity weight (%)", value = 20, min = 0, max = 60, step = 5),
-                sliderInput("au_pm_bucket_cap", "Max share per methodology bucket (%)", value = 30, min = 10, max = 100, step = 5)
+                sliderInput("au_pm_bucket_cap", "Max share per methodology bucket (%)", value = 30, min = 10, max = 100, step = 5),
+                hr(),
+                geo_preference_ui("au_pm")
               ),
               mainPanel(
                 width = 9,
@@ -3729,68 +4541,6 @@ ui <- navbarPage(
                 DTOutput("au_pm_table")
               )
             )
-          )
-        ),
-        tabPanel(
-          "Optimal Portfolio",
-          if (!has_australia_data) {
-            fluidPage(tags$p(em("Available once the Australia pipeline has real company data loaded.")))
-          } else {
-            fluidPage(
-              sidebarLayout(
-                sidebarPanel(
-                  width = 3,
-                  selectizeInput("au_pce_company", "Company",
-                                  choices = c("Type to search..." = "", australia_company_choices),
-                                  options = list(placeholder = "Type to search...")),
-                  uiOutput("au_pce_sizing_for"),
-                  sliderInput("au_pce_target_year", "Year to size portfolio for", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
-                  radioButtons(
-                    "au_pce_gap_scenario", "Size portfolio against",
-                    choices = c("Your Own Goal" = "own", "SBTi Target" = "sbti"),
-                    selected = "sbti"
-                  ),
-                  helpText(em("No \"Industry Target\" option -- no sector data exists in this source.")),
-                  sliderInput("au_pce_target_reduction", "Target reduction from baseline (%) (for \"Your Own Goal\")",
-                              value = 30, min = 1, max = 100, step = 1, post = "%"),
-                  numericInput("au_pce_budget", "Annual credit budget ($)", value = 50000, min = 0),
-                  hr(),
-                  h5("Relative preference weight"),
-                  sliderInput("au_pce_wt_nat_avoid", "Nature-based avoidance", value = 20, min = 0, max = 100, step = 5),
-                  sliderInput("au_pce_wt_nat_removal", "Nature-based removal", value = 20, min = 0, max = 100, step = 5),
-                  sliderInput("au_pce_wt_tech_avoid", "Technology-based avoidance", value = 20, min = 0, max = 100, step = 5),
-                  sliderInput("au_pce_wt_tech_removal", "Technology-based removal", value = 20, min = 0, max = 100, step = 5),
-                  sliderInput("au_pce_wt_comm_avoid", "Community-based avoidance", value = 20, min = 0, max = 100, step = 5),
-                  uiOutput("au_pce_normalized_readout"),
-                  hr(),
-                  sliderInput("au_pce_proximity_weight", "Proximity weight (%)", value = 20, min = 0, max = 60, step = 5),
-                  sliderInput("au_pce_bucket_cap", "Max share per methodology bucket (%)", value = 40, min = 10, max = 100, step = 5)
-                ),
-                mainPanel(
-                  width = 9,
-                  uiOutput("au_pce_stat_cards"),
-                  uiOutput("au_pce_capital_needed"),
-                  uiOutput("au_pce_progress_bar"),
-                  uiOutput("au_pce_close_gap_suggestion"),
-                  br(),
-                  fluidRow(
-                    column(width = 4, uiOutput("au_pce_scope1_card")),
-                    column(width = 4, uiOutput("au_pce_scope2_card")),
-                    column(width = 4, uiOutput("au_pce_scope3_card"))
-                  ),
-                  br(),
-                  fluidRow(
-                    column(width = 6, plotOutput("au_pce_category_plot", height = "320px")),
-                    column(width = 6, plotOutput("au_pce_spend_pie", height = "320px"))
-                  ),
-                  hr(),
-                  h5("Full breakdown, by project"),
-                  DTOutput("au_pce_table")
-                )
-              )
-            )
-          }
-        )
       )
     )
   )
@@ -3806,11 +4556,10 @@ ui <- navbarPage(
     if (has_africa_data) africa_real_cp_tab_ui() else synthetic_cp_tab_ui("africa", c("South Africa", "Morocco")),
     tabPanel(
     "Portfolio Mix",
+    value = "africa_portfolio_mix",
     fluidPage(
-      tabsetPanel(
-        tabPanel(
-          "Country View",
-          fluidPage(
+      region_switcher_ui("africa_company_profile", "africa_portfolio_mix", "pm"),
+      fluidPage(
             sidebarLayout(
               sidebarPanel(
                 width = 3,
@@ -3827,7 +4576,7 @@ ui <- navbarPage(
                     conditionalPanel(
                       condition = "input.africa_pm_gap_mode == 'profile'",
                       selectizeInput("africa_pm_gap_company", "Company",
-                                      choices = c("Type to search..." = "", africa_company_choices),
+                                      choices = NULL,
                                       options = list(placeholder = "Type to search...")),
                       sliderInput("africa_pm_gap_target_year", "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
                       sliderInput("africa_pm_gap_target_reduction", "Target reduction from baseline (%)",
@@ -3847,7 +4596,9 @@ ui <- navbarPage(
                 numericInput("africa_pm_budget", "Annual budget ($)", value = 1000000, min = 0),
                 hr(),
                 sliderInput("africa_pm_proximity_weight", "Proximity weight (%)", value = 20, min = 0, max = 60, step = 5),
-                sliderInput("africa_pm_bucket_cap", "Max share per methodology bucket (%)", value = 30, min = 10, max = 100, step = 5)
+                sliderInput("africa_pm_bucket_cap", "Max share per methodology bucket (%)", value = 30, min = 10, max = 100, step = 5),
+                hr(),
+                geo_preference_ui("africa_pm")
               ),
               mainPanel(
                 width = 9,
@@ -3881,69 +4632,6 @@ ui <- navbarPage(
                 DTOutput("africa_pm_table")
               )
             )
-          )
-        ),
-        tabPanel(
-          "Optimal Portfolio",
-          if (!has_africa_data) {
-            fluidPage(tags$p(em("Available once the Africa pipeline has real company data loaded.")))
-          } else {
-            fluidPage(
-              sidebarLayout(
-                sidebarPanel(
-                  width = 3,
-                  selectizeInput("africa_pce_company", "Company",
-                                  choices = c("Type to search..." = "", africa_company_choices),
-                                  options = list(placeholder = "Type to search...")),
-                  uiOutput("africa_pce_sizing_for"),
-                  sliderInput("africa_pce_target_year", "Year to size portfolio for", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
-                  radioButtons(
-                    "africa_pce_gap_scenario", "Size portfolio against",
-                    choices = c("Your Own Goal" = "own", "Industry Target" = "industry", "SBTi Target" = "sbti"),
-                    selected = "sbti"
-                  ),
-                  sliderInput("africa_pce_target_reduction", "Target reduction from baseline (%) (for \"Your Own Goal\")",
-                              value = 30, min = 1, max = 100, step = 1, post = "%"),
-                  numericInput("africa_pce_budget", "Annual credit budget ($)", value = 50000, min = 0),
-                  hr(),
-                  h5("Relative preference weight"),
-                  sliderInput("africa_pce_wt_nat_avoid", "Nature-based avoidance", value = 20, min = 0, max = 100, step = 5),
-                  sliderInput("africa_pce_wt_nat_removal", "Nature-based removal", value = 20, min = 0, max = 100, step = 5),
-                  sliderInput("africa_pce_wt_tech_avoid", "Technology-based avoidance", value = 20, min = 0, max = 100, step = 5),
-                  sliderInput("africa_pce_wt_tech_removal", "Technology-based removal", value = 20, min = 0, max = 100, step = 5),
-                  sliderInput("africa_pce_wt_comm_avoid", "Community-based avoidance", value = 20, min = 0, max = 100, step = 5),
-                  uiOutput("africa_pce_normalized_readout"),
-                  hr(),
-                  sliderInput("africa_pce_proximity_weight", "Proximity weight (%)", value = 20, min = 0, max = 60, step = 5),
-                  sliderInput("africa_pce_bucket_cap", "Max share per methodology bucket (%)", value = 40, min = 10, max = 100, step = 5)
-                ),
-                mainPanel(
-                  width = 9,
-                  uiOutput("africa_pce_stat_cards"),
-                  uiOutput("africa_pce_capital_needed"),
-                  uiOutput("africa_pce_progress_bar"),
-                  uiOutput("africa_pce_close_gap_suggestion"),
-                  br(),
-                  fluidRow(
-                    column(width = 4, uiOutput("africa_pce_scope1_card")),
-                    column(width = 4, uiOutput("africa_pce_scope2_card")),
-                    column(width = 4, uiOutput("africa_pce_scope3_card"))
-                  ),
-                  br(),
-                  fluidRow(
-                    column(width = 6, plotOutput("africa_pce_category_plot", height = "320px")),
-                    column(width = 6, plotOutput("africa_pce_spend_pie", height = "320px"))
-                  ),
-                  hr(),
-                  h5("Full breakdown, by project"),
-                  DTOutput("africa_pce_table"),
-                  hr(),
-                  tags$p(em("Scope 3 shown as one combined figure for now -- a full 15-category GHG Protocol breakdown is a planned next step, not yet built for Africa."))
-                )
-              )
-            )
-          }
-        )
       )
     )
   )
@@ -4042,18 +4730,66 @@ ui <- navbarPage(
 
 server <- function(input, output, session) {
 
+  # ---- Hide the "Internal Use" navbar dropdown from clients, without
+  # touching the restricted tabs or their content at all (per direct
+  # request: "hide it in this section but have it exist anyway"). This
+  # is a SECOND, independent layer on top of the existing internal_gate()
+  # password prompt (below) -- that gate still protects the actual
+  # Backtesting/Pricing content; this just stops the menu ITEM itself
+  # from advertising that a restricted section exists.
+  #
+  # hideTab()/showTab() are base Shiny (shinyjs is not used anywhere in
+  # this app) and work on a navbarMenu's own title, hiding the whole
+  # dropdown at once -- nothing about the Backtesting/Pricing tabPanel()
+  # definitions, their server logic, or internal_gate() itself changes.
+  #
+  # Hidden on every load by default. Appending "?key=<internal_access_code>"
+  # to the app's URL (a link only internal staff would be given, not
+  # something a client would stumble onto) reveals the dropdown again --
+  # the person still has to enter that same code a second time in the
+  # password box inside it, since this only restores the MENU ITEM, not
+  # the content behind it.
+  hideTab(inputId = "main_navbar", target = "Internal Use")
+
+  # Same treatment for the other two restricted areas that live INSIDE a
+  # region's Portfolio Mix tabset rather than their own top-level navbar
+  # entry (per direct request: "Coverage Audit and Internal Demand Trends
+  # should also be hidden, like we did with Backtesting and Pricing") --
+  # "Coverage Audit"/"Internal: Demand Trends" (US) and "Internal: Demand
+  # Trends" (EU) are both still internal_gate()-password-protected exactly
+  # as before; this just stops their tab LABELS from showing in the
+  # Portfolio Mix subtabset to begin with. Both tabsetPanel()s already had
+  # their own id (us_pm_tabset / eu_pm_tabset), so no UI change was needed
+  # to make them hideTab()-able.
+  hideTab(inputId = "us_pm_tabset", target = "Coverage Audit")
+  hideTab(inputId = "us_pm_tabset", target = "Internal: Demand Trends")
+  hideTab(inputId = "eu_pm_tabset", target = "Internal: Demand Trends")
+
+  observeEvent(session$clientData$url_search, {
+    qs <- parseQueryString(session$clientData$url_search)
+    if (!is.null(qs$key) && identical(qs$key, internal_access_code)) {
+      showTab(inputId = "main_navbar", target = "Internal Use", select = FALSE)
+      showTab(inputId = "us_pm_tabset", target = "Coverage Audit", select = FALSE)
+      showTab(inputId = "us_pm_tabset", target = "Internal: Demand Trends", select = FALSE)
+      showTab(inputId = "eu_pm_tabset", target = "Internal: Demand Trends", select = FALSE)
+    }
+  }, once = TRUE)
+
   # ---- Global Portfolio wizard ----
-  # Three steps, all rendered by ONE uiOutput driven by wizard_step()/
+  # Four steps, all rendered by ONE uiOutput driven by wizard_step()/
   # wizard_region(): (1) region cards, (2) new-vs-existing company
-  # choice, (3) a data-entry form. "Continue" on step 3 populates that
-  # region's REAL sidebar inputs (updateTextInput/updateSliderInput/
-  # etc.) with whatever was entered here, then navigates there with
+  # choice, (3) company/facility scope (US, existing company: whole
+  # company or one specific facility; every other case is just a
+  # confirmation with nothing else to pick), (4) a data-entry form
+  # ("Details"). "Continue" on step 4 populates that region's REAL
+  # sidebar inputs (updateTextInput/updateSliderInput/etc.) with
+  # whatever was entered here, then navigates there with
   # updateNavbarPage() -- the person lands on the actual regional
-  # Company Profile tab with everything already filled in. One
-  # genuine gap, stated here and again in the UI: Shiny cannot
-  # simulate a button click server-side, so the person still needs to
-  # press "Calculate" once themselves after arriving -- this wizard
-  # cannot do that last click for them.
+  # Company Profile tab with everything already computed and showing,
+  # since every region's charts/tables now recompute automatically off
+  # those same inputs -- the old "Calculate" button + isolate() gating
+  # was removed per direct request, so there's no longer a manual step
+  # left for the wizard to need to trigger here.
   #
   # Region config -- one list per region, holding exactly what the
   # wizard needs to both DISPLAY it (label/color/badge) and DISPATCH
@@ -4062,33 +4798,50 @@ server <- function(input, output, session) {
   # (auto-detecting existing vs. new), not a separate picker/radio
   # pair the way the other five regions all share -- so EU skips the
   # step-2 choice entirely, matching its own tab's actual UI.
+  # coverage: one short, human line naming how much real ground each
+  # region's data actually covers -- shown on the region cards below so
+  # the difference between "one country" and "dozens of states/
+  # countries" is visible before anyone clicks in. Built from the
+  # actual loaded data (length(state_list), distinct countries in the
+  # real company panel, etc.), never a hardcoded count, so it can't go
+  # stale as more real data gets loaded over time -- same "never
+  # hardcoded" principle the badge field below already followed.
   wizard_regions <- list(
     us = list(label = "United States", color = "#2980B9", tab_value = "us_company_profile",
               has_data = TRUE, badge = "Real GHGRP data", free_text_match = FALSE,
-              existing_choices = company_choices_alpha, has_sector = TRUE, sector_choices = sector_list),
+              coverage = paste0(length(state_list), " US states"),
+              existing_choices = company_choices_alpha, has_sector = TRUE, sector_choices = sector_list,
+              has_state_county = TRUE, has_forecast_toggle = TRUE),
     eu = list(label = "Europe", color = "#8E44AD", tab_value = "eu_company_profile",
-              has_data = TRUE, badge = "Real EPRTR data", free_text_match = TRUE),
+              has_data = TRUE, badge = "Real EPRTR data", free_text_match = FALSE,
+              coverage = paste0(length(country_list_eu), " European countries"),
+              existing_choices = eu_company_choices_alpha, has_sector = TRUE, sector_choices = sector_bucket_list_eu,
+              has_country = TRUE, country_choices = country_list_eu),
     latam = list(label = "Latin America", color = "#27AE60", tab_value = "latam_company_profile",
                  has_data = has_chile_data,
-                 badge = if (has_chile_data) paste0("Real data: ", nrow(company_lookup_chile), " companies (Chile)") else "Synthetic data",
+                 badge = if (has_chile_data) paste0("Real data: ", nrow(company_lookup_chile), " companies (Chile + Brazil)") else "Synthetic data",
+                 coverage = if (has_chile_data) paste(sort(unique(as.character(company_lookup_chile$country))), collapse = " + ") else "Chile + Brazil (synthetic)",
                  free_text_match = FALSE,
                  existing_choices = if (has_chile_data) chile_company_choices else character(0),
                  has_sector = TRUE, sector_choices = if (has_chile_data) sector_list_chile_real else character(0)),
     asia = list(label = "Asia", color = "#E67E22", tab_value = "asia_company_profile",
                 has_data = has_asia_data,
                 badge = if (has_asia_data) paste0("Real data: ", nrow(company_lookup_asia), " companies") else "Synthetic data",
+                coverage = if (has_asia_data) paste(sort(unique(as.character(company_lookup_asia$country))), collapse = " + ") else "India + Singapore (synthetic)",
                 free_text_match = FALSE,
                 existing_choices = if (has_asia_data) asia_company_choices else character(0),
                 has_sector = TRUE, sector_choices = if (has_asia_data) sector_list_asia_real else character(0)),
     australia = list(label = "Australia", color = "#16A085", tab_value = "australia_company_profile",
                       has_data = has_australia_data,
                       badge = if (has_australia_data) paste0("Real data: ", nrow(company_lookup_australia), " companies") else "Synthetic data",
+                      coverage = "Australia (NGER)",
                       free_text_match = FALSE,
                       existing_choices = if (has_australia_data) australia_company_choices else character(0),
                       has_sector = FALSE),  # free-text sector only, no controlled list -- see the Australia pipeline's own notes
     africa = list(label = "Africa", color = "#C0392B", tab_value = "africa_company_profile",
                   has_data = has_africa_data,
                   badge = if (has_africa_data) paste0("Real data: ", nrow(company_lookup_africa), " companies (South Africa)") else "Synthetic data",
+                  coverage = "South Africa",
                   free_text_match = FALSE,
                   existing_choices = if (has_africa_data) africa_company_choices else character(0),
                   has_sector = TRUE, sector_choices = if (has_africa_data) sector_list_africa_real else character(0))
@@ -4096,12 +4849,170 @@ server <- function(input, output, session) {
 
   wizard_step <- reactiveVal(1)
   wizard_region <- reactiveVal(NULL)
+  # Whatever the user typed/picked in the step-2 single match field --
+  # carried forward so step 3 can pre-fill its (now hidden) picker/name
+  # inputs without needing those inputs to already exist in the DOM.
+  wizard_matched_value <- reactiveVal("")
+  # Holds a facility choice made in the wizard's step 3 (US, existing
+  # company only) until the Company Profile tab's own facility-picker-
+  # population observer is ready to apply it -- see that observer
+  # (right after output$intake_has_multi_facility_match) for why this
+  # can't just be an updateSelectizeInput() call straight out of
+  # wizard_continue: intake_facility_pick's real choices don't exist
+  # yet at that point, since they're only populated once
+  # intake_matched_facilities_all() itself has recomputed off the
+  # company name the wizard is in the middle of setting. Re-validated
+  # against the CURRENT matched facility set every time it's read (see
+  # that observer), so a stale value left over from an earlier,
+  # different company is always harmless.
+  wizard_pending_facility <- reactiveVal(NULL)
+  # Bumped every single time wizard_continue runs, regardless of
+  # whether the new wizard_pending_facility value differs from the
+  # last one (reactiveVal only invalidates on a real content change,
+  # per identical()) -- without this, testing the SAME company twice
+  # in a row through the wizard (e.g. "Whole company" then "One
+  # specific facility", or the same facility picked twice) could leave
+  # input$intake_company_name unchanged, so intake_matched_facilities_
+  # all() never recomputes, and the populate observer below would
+  # never re-run to apply the second pick. Listed alongside
+  # intake_matched_facilities_all() in that observer's event
+  # expression so EITHER one changing is enough to re-trigger it.
+  wizard_pending_nonce <- reactiveVal(0)
 
-  # Minimal line-and-dot stepper -- a real 3-step sequence, so numbered
+  # US-only: the real facilities of whichever company is currently
+  # matched in the wizard (step 2/3), keyed the same way
+  # intake_matched_facilities_all() is (the extract_company() first-
+  # word key == the value company_choices_alpha itself stores) --
+  # lets step 3 offer the same "whole company vs. one facility" choice
+  # the Company Profile tab's sidebar offers, before ever landing on
+  # that tab.
+  wizard_us_facility_choices <- reactive({
+    if (!identical(wizard_region(), "us")) return(NULL)
+    if (!identical(input$wizard_company_mode, "existing")) return(NULL)
+    key <- wizard_matched_value()
+    if (is.null(key) || !nzchar(key)) return(NULL)
+    fac <- facility_lookup %>% filter(company == key) %>% arrange(desc(emissions_2023))
+    if (nrow(fac) == 0) return(NULL)
+    fac
+  })
+
+  # Shared choice-builder for wizard_facility_pick -- used both by the
+  # render (below) and by the reset observer (observeEvent(wizard_step(),
+  # ...) further down), so the two can never drift out of sync. Leads
+  # with a genuine BLANK option ("" -- Choose a facility...), not just
+  # `selected = NULL`: Shiny's selectInput()/selectizeInput() silently
+  # default `selected` to the FIRST real choice when it's NULL, which
+  # for a desc(emissions_2023)-sorted list means the company's single
+  # highest-emitting facility gets pre-selected as soon as the widget
+  # mounts -- even while it's hidden behind conditionalPanel and
+  # "Whole company" is still the chosen radio. That's what was causing
+  # a specific facility (e.g. a company's biggest site) to already be
+  # loaded into input$wizard_facility_pick with no action from the
+  # person at all.
+  wizard_us_facility_label_choices <- function(wf) {
+    if (is.null(wf) || nrow(wf) == 0) return(c("Choose a facility..." = ""))
+    labels <- if (has_city_data) {
+      paste0(wf$facility_name, " -- ", wf$state, " (", comma(round(wf$emissions_2023)), " t, 2023)")
+    } else {
+      paste0(wf$facility_name, " (", comma(round(wf$emissions_2023)), " t, 2023)")
+    }
+    c("Choose a facility..." = "", setNames(wf$facility_id, labels))
+  }
+
+  # US-only: the sector to preview the industry-standard target for,
+  # while still in the wizard (before landing on the Company Profile
+  # tab, where input$intake_sector would normally be the source). For
+  # an existing matched company, derives the same dominant-sector-by-
+  # emissions logic intake_sync_sector_location() uses on the real tab,
+  # off the SAME facility set already computed for the facility picker
+  # (wizard_us_facility_choices()); for a new company, just reads the
+  # sector picked in this step's own dropdown.
+  wizard_us_dominant_sector <- reactive({
+    if (!identical(wizard_region(), "us")) return(NULL)
+    if (identical(input$wizard_company_mode, "existing")) {
+      wf <- wizard_us_facility_choices()
+      if (is.null(wf) || nrow(wf) == 0) return(NULL)
+      wf %>% count(primary_sector, wt = emissions_2023, sort = TRUE) %>% slice(1) %>% pull(primary_sector)
+    } else {
+      if (!is.null(input$wizard_sector) && nzchar(input$wizard_sector)) input$wizard_sector else NULL
+    }
+  })
+
+  # Wizard-side mirror of output$intake_industry_target_note -- same
+  # real, sector-specific target_lookup row, same explicit framing,
+  # shown here too so picking "No" in the wizard is just as transparent
+  # as it is on the Company Profile tab itself.
+  output$wizard_industry_target_note <- renderUI({
+    sector <- wizard_us_dominant_sector()
+    if (is.null(sector)) {
+      return(tags$p(style = "font-size:12px; color:#95A5A6;",
+                      "Match a company or pick a sector above to see the industry-standard target."))
+    }
+    tl <- target_lookup %>% filter(primary_sector == sector)
+    if (nrow(tl) == 0) {
+      return(tags$div(
+        style = paste(
+          "background:rgba(255,255,255,0.96); border-left:3px solid #E67E22;",
+          "border-radius:3px; padding:0.55rem 0.85rem;",
+          "box-shadow:0 1px 2px rgba(0,0,0,0.10);"
+        ),
+        tags$div(
+          style = paste(
+            "font-size:10px; font-weight:700; letter-spacing:0.06em;",
+            "text-transform:uppercase; color:#E67E22; margin-bottom:3px;"
+          ),
+          "No industry standard found"
+        ),
+        tags$div(
+          style = "font-size:12.5px; color:#273746; line-height:1.5;",
+          "Nothing in the industry data for “", sector,
+          "” yet — switch to “Yes” above and set your own target instead."
+        )
+      ))
+    }
+    # names() %in% check first -- same reason as output$intake_industry_
+    # target_note's identical guard.
+    src <- if ("source_organization" %in% names(tl) && !is.na(tl$source_organization[1]) && nzchar(tl$source_organization[1])) {
+      tl$source_organization[1]
+    } else {
+      "industry sources"
+    }
+    # Same elegant near-white / left-accent-border card as
+    # output$intake_industry_target_note -- kept visually identical so the
+    # wizard and the Company Profile tab present this note the same way.
+    tags$div(
+      style = paste(
+        "background:rgba(255,255,255,0.96); border-left:3px solid #1B7F98;",
+        "border-radius:3px; padding:0.6rem 0.9rem;",
+        "box-shadow:0 1px 2px rgba(0,0,0,0.10);"
+      ),
+      tags$div(
+        style = paste(
+          "font-size:10px; font-weight:700; letter-spacing:0.06em;",
+          "text-transform:uppercase; color:#1B7F98; margin-bottom:4px;"
+        ),
+        "Industry-standard target"
+      ),
+      tags$div(
+        style = "font-size:13px; color:#1C2833; line-height:1.5;",
+        tags$span(style = "font-weight:600; color:#1C2833;", sector), tags$br(),
+        # Same fix as output$intake_industry_target_note: pin color on
+        # every <b> explicitly, since .well b { color:#FFFFFF; } otherwise
+        # makes these invisible (white) on this near-white card.
+        "Target year ", tags$b(style = "color:#1C2833;", tl$target_year[1]), " · ",
+        tags$b(style = "color:#1C2833;", paste0(round(tl$reduction_fraction[1] * 100, 1), "%")),
+        " reduction from baseline"
+        # Source line removed per direct request, same as the Company
+        # Profile tab's version -- box shows sector/year/reduction only.
+      )
+    )
+  })
+
+  # Minimal line-and-dot stepper -- a real 4-step sequence, so numbered
   # steps are earning their place here rather than decorating content
   # that isn't actually sequential.
   wizard_stepper <- function(current_step, accent) {
-    labels <- c("Region", "Company", "Details")
+    labels <- c("Region", "Company", "Company/Facility", "Details")
     dots <- lapply(seq_along(labels), function(i) {
       active <- i <= current_step
       tags$div(
@@ -4143,26 +5054,30 @@ server <- function(input, output, session) {
           style = "display:grid; grid-template-columns:repeat(3, 1fr); gap:1rem;",
           lapply(names(wizard_regions), function(key) {
             r <- wizard_regions[[key]]
+            card_id <- paste0("gp_region_card_", key)
             tags$div(
+              id = card_id,
               style = paste0(
-                "background:#FFFFFF; border-radius:10px; padding:1.6rem 1.4rem; cursor:pointer; ",
+                "background:#FFFFFF; border-radius:12px; padding:1.7rem 1.5rem; cursor:pointer; ",
+                "min-height:88px; display:flex; align-items:center; justify-content:space-between; ",
                 "border:1px solid #E8EBED; border-left:3px solid ", r$color, "; ",
-                "transition:border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;"
+                "box-shadow:0 1px 2px rgba(16,24,40,0.04); ",
+                "transition:transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;"
               ),
               onclick = sprintf("Shiny.setInputValue('global_portfolio_region_click', '%s', {priority: 'event'})", key),
-              onmouseover = paste0("this.style.boxShadow='0 4px 14px rgba(0,0,0,0.08)'; this.style.background='", r$color, "08';"),
-              onmouseout  = "this.style.boxShadow='none'; this.style.background='#FFFFFF';",
-              tags$div(
-                style = "display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.9rem;",
-                tags$h4(style = "color:#1B2631; font-weight:700; margin:0; font-size:16.5px;", r$label),
-                tags$span(style = paste0("color:", r$color, "; font-size:18px; font-weight:300;"), "\u2197")
+              onmouseover = paste0(
+                "this.style.boxShadow='0 8px 20px rgba(16,24,40,0.09)'; this.style.transform='translateY(-2px)'; ",
+                "this.querySelector('.gp-arrow').style.transform='translate(2px,-2px)';"
               ),
+              onmouseout = paste0(
+                "this.style.boxShadow='0 1px 2px rgba(16,24,40,0.04)'; this.style.transform='translateY(0)'; ",
+                "this.querySelector('.gp-arrow').style.transform='translate(0,0)';"
+              ),
+              tags$h4(style = "color:#1B2631; font-weight:700; margin:0; font-size:16.5px; letter-spacing:-0.01em;", r$label),
               tags$span(
-                style = paste0(
-                  "display:inline-block; font-size:10.5px; font-weight:600; padding:2px 9px; border-radius:3px; ",
-                  if (r$has_data) "background:#EAFAF1; color:#1E8449;" else "background:#FEF6E0; color:#9A7B0A;"
-                ),
-                r$badge
+                class = "gp-arrow",
+                style = paste0("color:", r$color, "; font-size:19px; font-weight:300; line-height:1; transition:transform 0.15s ease;"),
+                "\u2197"
               )
             )
           })
@@ -4198,76 +5113,196 @@ server <- function(input, output, session) {
         input_id, label, width = "100%",
         style = paste0("background:", accent, "; border-color:", accent, "; color:white; font-weight:600; margin-top:1.2rem;")
       )
-
-      if (r$free_text_match) {
+      # Target section for step 4 -- US only gets the explicit "does the
+      # company have its own target?" question (the real, sector-
+      # specific industry-standard fallback via target_lookup only
+      # exists for the US intake_target_pathway() reactive today); every
+      # other region keeps its existing always-editable sliders
+      # unchanged, rather than showing a toggle with nothing real wired
+      # up behind it.
+      wizard_target_section <- function() {
         tagList(
-          header,
-          tags$div(
-            style = card_style,
-            section_label("Company"),
-            textInput("wizard_eu_company_name", NULL, placeholder = "Type a company name..."),
-            helpText(style = "margin-top:-0.4rem; font-size:12px;", em("Matches against real EPRTR data automatically; unmatched names are treated as new.")),
-            section_label("Emissions Data (optional)"),
-            downloadLink("wizard_template_download", "Download the blank template", style = "font-size:12.5px;"),
-            tags$div(style = "margin-top:0.5rem;", fileInput("wizard_emissions_upload", NULL, accept = c(".xlsx"), buttonLabel = "Browse...", placeholder = "No file selected")),
-            uiOutput("wizard_upload_status"),
-            section_label("Target"),
-            sliderInput("wizard_target_year", "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
-            sliderInput("wizard_target_reduction", "Target reduction from baseline (%)", value = 30, min = 1, max = 100, step = 1, post = "%"),
-            continue_btn("wizard_continue", "Continue to Company Profile")
-          )
+          section_label("Target"),
+          if (identical(wizard_region(), "us")) {
+            tagList(
+              radioButtons(
+                "wizard_has_own_target", "Does the company have its own stated emissions target?",
+                choices = c("Yes -- set it below" = "yes", "No -- use the industry standard" = "no"),
+                selected = "no"
+              ),
+              conditionalPanel(
+                condition = "input.wizard_has_own_target == 'yes'",
+                sliderInput("wizard_target_year", "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
+                sliderInput("wizard_target_reduction", "Target reduction from baseline (%)", value = 30, min = 1, max = 100, step = 1, post = "%")
+              ),
+              conditionalPanel(
+                condition = "input.wizard_has_own_target == 'no'",
+                uiOutput("wizard_industry_target_note")
+              )
+            )
+          } else {
+            tagList(
+              sliderInput("wizard_target_year", "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
+              sliderInput("wizard_target_reduction", "Target reduction from baseline (%)", value = 30, min = 1, max = 100, step = 1, post = "%")
+            )
+          }
         )
-      } else if (step == 2) {
+      }
+
+      if (step == 2) {
         tagList(
           header,
           tags$div(
             style = card_style,
-            radioButtons(
-              "wizard_company_mode", "Is this a new company, or entering data for an existing one?",
-              choices = c("Select an existing company" = "existing", "Add a new company" = "new"),
-              selected = "new"
+            # choices = NULL here (was the full r$existing_choices list,
+            # embedded directly -- thousands of <option> tags for a
+            # region like US, which is exactly the "large number of
+            # options" console warning) -- populated server-side instead
+            # by the observeEvent(wizard_step(), ...) below, the same
+            # pattern already used for intake_company_match/
+            # intake_company_existing_picker elsewhere in this app.
+            selectizeInput(
+              "wizard_company_match", "Company name",
+              choices = NULL, selected = "",
+              options = list(create = TRUE, placeholder = "Type a company name -- we'll match it to an existing one, or add it as new")
             ),
+            tags$div(style = "display:none;",
+                      radioButtons("wizard_company_mode", NULL, choices = c("existing", "new"), selected = "new")),
             continue_btn("wizard_to_step3", "Continue")
           )
         )
+      } else if (step == 3) {
+        # "Company/Facility" step -- decides the analysis SCOPE for an
+        # existing matched company (US only: whole company, or one
+        # specific real facility), separated out from the "Details"
+        # step per direct request so it reads as its own deliberate
+        # choice rather than one more field buried in a long form.
+        # Every other case (a new company, or an existing match in a
+        # region without per-facility data) has nothing to choose here
+        # -- it's a confirmation of the Step-2 match, with "go back"
+        # still available, before moving on to Details.
+        tagList(
+          header,
+          tags$div(
+            style = card_style,
+            if (identical(input$wizard_company_mode, "existing")) {
+              matched_name <- names(r$existing_choices)[match(wizard_matched_value(), r$existing_choices)]
+              # US only, and only when the matched company genuinely has
+              # more than one real GHGRP facility -- a single-facility
+              # company has nothing to drill into ("whole company" and
+              # "one specific facility" are the same thing). Offers the
+              # same choice the Company Profile tab's own sidebar offers
+              # (see intake_analysis_level there), but here, before
+              # "Continue," so the tab opens already narrowed instead of
+              # asking a second time once landed on it.
+              wf <- if (identical(wizard_region(), "us")) wizard_us_facility_choices() else NULL
+              tagList(
+                section_label("Company"),
+                tags$p(style = "font-size:13px; color:#5D6D7E;",
+                        "Matched to: ", tags$b(if (length(matched_name) && !is.na(matched_name[1])) matched_name[1] else wizard_matched_value()),
+                        " (", tags$a(href = "#", onclick = "Shiny.setInputValue('wizard_back', Math.random(), {priority:'event'}); return false;", "not right? go back"), ")"),
+                # choices = NULL (was the full list embedded again, same
+                # issue as wizard_company_match above) -- populated
+                # server-side by the observeEvent(wizard_step(), ...) below.
+                tags$div(style = "display:none;",
+                          selectizeInput("wizard_existing_picker", NULL,
+                                          choices = NULL,
+                                          selected = wizard_matched_value(),
+                                          options = list(placeholder = "Type to search..."))),
+                if (!is.null(wf) && nrow(wf) > 1) {
+                  tagList(
+                    section_label("Analysis Scope"),
+                    radioButtons(
+                      "wizard_facility_level", NULL,
+                      choices = c("Whole company (all facilities)" = "company", "One specific facility" = "facility"),
+                      selected = "company"
+                    ),
+                    conditionalPanel(
+                      condition = "input.wizard_facility_level == 'facility'",
+                      selectizeInput(
+                        "wizard_facility_pick", NULL,
+                        choices = wizard_us_facility_label_choices(wf),
+                        selected = "",
+                        options = list(placeholder = "Choose a facility...")
+                      )
+                    )
+                  )
+                } else {
+                  tags$p(style = "font-size:12.5px; color:#95A5A6; margin-top:0.6rem;",
+                          "This company has a single real facility on record, so there's no separate facility-level view.")
+                }
+              )
+            } else {
+              tagList(
+                section_label("Company"),
+                tags$p(style = "font-size:13px; color:#5D6D7E;",
+                        "New company: ", tags$b(wizard_matched_value()),
+                        " (", tags$a(href = "#", onclick = "Shiny.setInputValue('wizard_back', Math.random(), {priority:'event'}); return false;", "not right? go back"), ")"),
+                tags$p(style = "font-size:12.5px; color:#95A5A6; margin-top:0.6rem;",
+                        "A new company is entered as a whole -- facility-level detail is only available for a company already in our real data.")
+              )
+            },
+            continue_btn("wizard_to_step4", "Continue")
+          )
+        )
       } else {
+        # "Details" step -- the actual data-entry form (target year/
+        # reduction always; location, sector, and the emissions upload
+        # for a genuinely new company only). The company-identity and
+        # company/facility-scope choices made in steps 2-3 are carried
+        # forward via wizard_matched_value()/wizard_pending_facility(),
+        # not re-shown here.
         tagList(
           header,
           tags$div(
             style = card_style,
             if (identical(input$wizard_company_mode, "existing")) {
               tagList(
-                section_label("Company"),
-                selectizeInput("wizard_existing_picker", NULL,
-                                choices = c("Type to search..." = "", r$existing_choices),
-                                options = list(placeholder = "Type to search...")),
-                section_label("Target"),
-                sliderInput("wizard_target_year", "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
-                sliderInput("wizard_target_reduction", "Target reduction from baseline (%)", value = 30, min = 1, max = 100, step = 1, post = "%")
+                # choices = NULL -- same server-side-selectize fix as the
+                # other wizard_existing_picker instance in step 3.
+                tags$div(style = "display:none;",
+                          selectizeInput("wizard_existing_picker", NULL,
+                                          choices = NULL,
+                                          selected = wizard_matched_value(),
+                                          options = list(placeholder = "Type to search..."))),
+                wizard_target_section()
               )
             } else {
               tagList(
-                section_label("Company"),
-                textInput("wizard_new_name", NULL, placeholder = "Company / Facility Name"),
+                tags$div(style = "display:none;", textInput("wizard_new_name", NULL, value = wizard_matched_value(), placeholder = "Company / Facility Name")),
+                if (isTRUE(r$has_country)) selectInput("wizard_country", "Company location (country)", choices = c("Not specified" = "", r$country_choices), selected = "") else NULL,
+                if (isTRUE(r$has_state_county)) tagList(
+                  selectInput("wizard_state", "State", choices = c("Not specified" = "", us_state_choices), selected = ""),
+                  selectInput("wizard_county", "County", choices = c("Select a state first" = ""), selected = "")
+                ) else NULL,
                 if (isTRUE(r$has_sector)) selectInput("wizard_sector", "Closest matching sector", choices = r$sector_choices, selected = r$sector_choices[1])
                 else if (identical(wizard_region(), "australia")) textInput("wizard_sector_text", "Sector (free text)", placeholder = "e.g. Mining")
                 else NULL,
+                if (isTRUE(r$has_forecast_toggle)) checkboxInput("wizard_show_forecast", "Show model forecast (sector trend)", value = TRUE) else NULL,
                 section_label("Emissions Data"),
                 downloadLink("wizard_template_download", "Download the blank template", style = "font-size:12.5px;"),
                 tags$div(style = "margin-top:0.5rem;", fileInput("wizard_emissions_upload", NULL, accept = c(".xlsx"), buttonLabel = "Browse...", placeholder = "No file selected")),
                 uiOutput("wizard_upload_status"),
-                section_label("Target"),
-                sliderInput("wizard_target_year", "Target year", value = 2030, min = 2026, max = 2050, step = 1, sep = ""),
-                sliderInput("wizard_target_reduction", "Target reduction from baseline (%)", value = 30, min = 1, max = 100, step = 1, post = "%")
+                wizard_target_section()
               )
             },
             continue_btn("wizard_continue", "Continue to Company Profile"),
             tags$p(style = "color:#AEB6BF; font-size:11px; margin-top:0.7rem; margin-bottom:0;",
-                    "You'll land on the real Company Profile tab with this filled in \u2014 one more click on \"Calculate\" there finishes it.")
+                    "This calculates automatically once you land on the Company Profile tab.")
           )
         )
       }
     }
+  })
+
+  observeEvent(input$region_switch_click, {
+    req(input$region_switch_click)
+    updateNavbarPage(session, "main_navbar", selected = input$region_switch_click)
+  })
+
+  observeEvent(input$eu_pm_go_to_methodologies, {
+    updateNavbarPage(session, "main_navbar", selected = "us_portfolio_mix")
+    updateTabsetPanel(session, "us_pm_tabset", selected = "us_methodologies")
   })
 
   observeEvent(input$global_portfolio_region_click, {
@@ -4277,10 +5312,98 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$wizard_back, {
-    if (wizard_step() > 2) wizard_step(2) else { wizard_step(1); wizard_region(NULL) }
+    # Steps back one at a time through the now-4-step sequence (4->3,
+    # 3->2), except from step 2, which also clears the region so
+    # landing back on step 1 shows the region picker fresh.
+    s <- wizard_step()
+    if (s > 2) wizard_step(s - 1) else { wizard_step(1); wizard_region(NULL) }
   })
 
+  # Single match field (step 2): decide existing vs. new from whether
+  # the typed/picked value is one of the current region's real company
+  # ids, store it for step 3 to pre-fill from, then flip the hidden
+  # wizard_company_mode radio so step 3's existing render branch and
+  # the dispatch logic below both keep working unchanged.
+  observeEvent(input$wizard_company_match, {
+    req(wizard_region())
+    r <- wizard_regions[[wizard_region()]]
+    val <- input$wizard_company_match
+    wizard_matched_value(if (is.null(val)) "" else val)
+    is_existing <- !is.null(val) && nzchar(val) && val %in% r$existing_choices
+    updateRadioButtons(session, "wizard_company_mode", selected = if (is_existing) "existing" else "new")
+  }, ignoreNULL = FALSE, ignoreInit = TRUE)
+
   observeEvent(input$wizard_to_step3, { wizard_step(3) })
+  observeEvent(input$wizard_to_step4, { wizard_step(4) })
+
+  # Populates the wizard's own selectize widgets server-side every time
+  # the step changes -- wizard_company_match (step 2) and
+  # wizard_existing_picker (steps 3-4, existing company only) both used
+  # to embed a region's FULL company list directly in their choices=
+  # argument at render time; for a region like US that's thousands of
+  # <option> tags shipped to the browser on every render, which is
+  # exactly the "large number of options" console warning. Same fix
+  # already applied to intake_company_match/_existing_picker and the
+  # Asia/Africa/Australia/Chile equivalents elsewhere in this app:
+  # choices = NULL at render time, real choices sent here via
+  # updateSelectizeInput(..., server = TRUE) once the widget exists.
+  observeEvent(wizard_step(), {
+    s <- wizard_step()
+    if (s < 2) return(invisible(NULL))
+    req(wizard_region())
+    r <- wizard_regions[[wizard_region()]]
+    if (s == 2) {
+      updateSelectizeInput(
+        session, "wizard_company_match",
+        choices = c("Type a company name..." = "", r$existing_choices),
+        selected = "", server = TRUE
+      )
+    } else if (identical(input$wizard_company_mode, "existing")) {
+      updateSelectizeInput(
+        session, "wizard_existing_picker",
+        choices = c("Type to search..." = "", r$existing_choices),
+        selected = wizard_matched_value(), server = TRUE
+      )
+      # Step 3 specifically: force wizard_facility_level/wizard_facility_pick
+      # back to their defaults ("company" / blank) with an explicit
+      # update*Input() call every time step 3 is (re)entered, rather than
+      # relying solely on the fresh radioButtons/selectizeInput's own
+      # `selected=` attribute from the renderUI below. A server-side
+      # update is what actually, reliably lands in input$wizard_facility_level
+      # -- this is the same reason intake_analysis_level gets an explicit
+      # updateRadioButtons() from its own populate observer instead of
+      # just trusting its UI-definition default.
+      if (s == 3) {
+        wf <- if (identical(wizard_region(), "us")) wizard_us_facility_choices() else NULL
+        if (!is.null(wf) && nrow(wf) > 1) {
+          updateRadioButtons(session, "wizard_facility_level", selected = "company")
+          # No server = TRUE here -- unlike wizard_company_match/
+          # wizard_existing_picker (a whole region's companies, thousands
+          # of rows), this is just ONE company's own facilities, a small
+          # list with no performance concern; it's also already fully
+          # embedded client-side by the renderUI above, so this just
+          # resets its selection back to blank, consistent with that.
+          updateSelectizeInput(
+            session, "wizard_facility_pick",
+            choices = wizard_us_facility_label_choices(wf),
+            selected = ""
+          )
+        }
+      }
+    }
+  }, ignoreNULL = FALSE, ignoreInit = TRUE)
+
+  # Mirrors intake_facility_state's own County-population logic, for
+  # the wizard's own State/County dropdowns (US only).
+  observeEvent(input$wizard_state, {
+    state <- input$wizard_state
+    if (is.null(state) || !nzchar(state)) {
+      updateSelectInput(session, "wizard_county", choices = c("Select a state first" = ""), selected = "")
+      return()
+    }
+    counties <- sort(us_county_lookup$county[us_county_lookup$state == state])
+    updateSelectInput(session, "wizard_county", choices = c("Not specified" = "", counties), selected = "")
+  }, ignoreInit = TRUE)
 
   # Shared upload parser -- same Year/Scope1/2/3 template and parsing
   # logic every region's own upload already uses, reused once here
@@ -4365,7 +5488,7 @@ server <- function(input, output, session) {
     r <- wizard_regions[[region]]
     up <- wizard_upload_parsed()
     ty <- input$wizard_target_year; tr <- input$wizard_target_reduction
-    is_existing <- !r$free_text_match && identical(input$wizard_company_mode, "existing")
+    is_existing <- identical(input$wizard_company_mode, "existing")
 
     apply_csv <- function(csv_id, csv_s2_id, csv_s3_id) {
       if (!is.null(up) && is.null(up$error)) {
@@ -4379,20 +5502,61 @@ server <- function(input, output, session) {
       if (is_existing) {
         updateRadioButtons(session, "intake_company_mode", selected = "existing")
         updateSelectizeInput(session, "intake_company_existing_picker", selected = input$wizard_existing_picker)
+        # Carries the wizard's own facility choice (if any) into the
+        # Company Profile tab's intake_analysis_level/intake_facility_pick
+        # -- can't just updateSelectizeInput() those directly here,
+        # since intake_facility_pick's real choices don't exist yet at
+        # this point (they're only populated once the company-name
+        # change above has propagated and intake_matched_facilities_all()
+        # has recomputed); wizard_pending_facility is picked up by that
+        # same populate-the-picker observer once it's ready.
+        if (identical(input$wizard_facility_level, "facility") &&
+            !is.null(input$wizard_facility_pick) && nzchar(input$wizard_facility_pick)) {
+          wizard_pending_facility(list(level = "facility", facility_id = input$wizard_facility_pick))
+        } else {
+          wizard_pending_facility(NULL)
+        }
+        # Forces the populate observer to re-run even when this exact
+        # same pending value (including NULL) was already set on a
+        # previous run through the wizard for the same company -- see
+        # wizard_pending_nonce's own comment above.
+        isolate(wizard_pending_nonce(wizard_pending_nonce() + 1))
       } else {
         updateRadioButtons(session, "intake_company_mode", selected = "new")
         updateTextInput(session, "intake_company_new_name", value = input$wizard_new_name)
         if (!is.null(input$wizard_sector)) updateSelectInput(session, "intake_sector", selected = input$wizard_sector)
+        if (!is.null(input$wizard_state) && nzchar(input$wizard_state)) {
+          updateSelectInput(session, "intake_facility_state", selected = input$wizard_state)
+          if (!is.null(input$wizard_county) && nzchar(input$wizard_county)) {
+            updateSelectInput(session, "intake_facility_county", selected = input$wizard_county)
+          }
+        }
+        if (!is.null(input$wizard_show_forecast)) updateCheckboxInput(session, "intake_show_forecast", value = input$wizard_show_forecast)
         apply_csv("intake_emissions_csv", "intake_emissions_csv_s2", "intake_emissions_csv_s3")
       }
       updateSliderInput(session, "intake_target_year", value = ty)
       updateSliderInput(session, "intake_target_reduction", value = tr)
+      # Carries the wizard's own "does the company have its own target?"
+      # answer into the Company Profile tab's equivalent control -- see
+      # wizard_target_section()/output$wizard_industry_target_note above
+      # and output$intake_industry_target_note below. Defaults to "no"
+      # (use the industry standard) if the wizard's own input somehow
+      # isn't set, matching that control's own default.
+      updateRadioButtons(
+        session, "intake_has_own_target",
+        selected = if (!is.null(input$wizard_has_own_target)) input$wizard_has_own_target else "no"
+      )
 
     } else if (region == "eu") {
-      updateTextInput(session, "eu_cp_company_name", value = input$wizard_eu_company_name)
-      if (!is.null(up) && is.null(up$error) && nzchar(up$csv_s1)) {
-        updateRadioButtons(session, "eu_cp_has_data", selected = "yes")
-        updateTextAreaInput(session, "eu_cp_emissions_csv", value = up$csv_s1)
+      if (is_existing) {
+        updateRadioButtons(session, "eu_cp_mode", selected = "existing")
+        updateSelectizeInput(session, "eu_cp_existing_picker", selected = input$wizard_existing_picker)
+      } else {
+        updateRadioButtons(session, "eu_cp_mode", selected = "new")
+        updateTextInput(session, "eu_cp_new_name", value = input$wizard_new_name)
+        if (!is.null(input$wizard_country) && nzchar(input$wizard_country)) updateSelectInput(session, "eu_cp_country", selected = input$wizard_country)
+        if (!is.null(input$wizard_sector)) updateSelectInput(session, "eu_cp_sector", selected = input$wizard_sector)
+        if (!is.null(up) && is.null(up$error) && nzchar(up$csv_s1)) updateTextAreaInput(session, "eu_cp_emissions_csv", value = up$csv_s1)
       }
       updateSliderInput(session, "eu_cp_target_year", value = ty)
       updateSliderInput(session, "eu_cp_target_reduction", value = tr)
@@ -4451,6 +5615,11 @@ server <- function(input, output, session) {
     }
 
     updateNavbarPage(session, "main_navbar", selected = r$tab_value)
+    # sendCustomMessage("wizard_click_calculate", ...) REMOVED per direct
+    # request -- there's no "Calculate" button left to click. Every chart/
+    # table in the region tab the wizard just navigated to now computes
+    # automatically from the inputs this dispatch block just populated, as
+    # soon as those update*Input() calls above land client-side.
     wizard_step(1); wizard_region(NULL)
     wizard_upload_parsed(NULL)
   })
@@ -4519,6 +5688,17 @@ server <- function(input, output, session) {
     selected = character(0),
     server   = TRUE
   )
+
+  # The single visible match field -- same list, server-side (this list
+  # can be large), with create=TRUE so a non-match becomes a new company.
+  updateSelectizeInput(
+    session, "intake_company_match",
+    choices  = company_choices_alpha,
+    selected = character(0),
+    server   = TRUE
+  )
+  wire_single_match_company(input, session, "intake_company", "intake_company_existing_picker", "intake_company_new_name",
+                             choices_fn = function() company_choices_alpha)
 
   # Keeps the shared hidden intake_company_name in sync with whichever
   # of the two visible controls is currently active -- every downstream
@@ -5020,20 +6200,11 @@ server <- function(input, output, session) {
       if (nrow(row) > 0) row$gap_mt[1] else NA
     }, error = function(e) NA)
 
-    stat_card <- function(value, label) {
-      tags$div(
-        style = "flex:1; background:#F4F6F7; border-radius:8px; padding:0.75rem 1rem; text-align:center;",
-        tags$div(style = "font-size:22px; font-weight:700; color:#2C3E50;", value),
-        tags$div(style = "font-size:11.5px; color:#7F8C8D;", label)
-      )
-    }
-
-    tags$div(
-      style = "display:flex; gap:12px; margin-bottom:16px;",
-      stat_card(comma(fac_count), "Facilities"),
-      stat_card(paste0(comma(round(total_2023 / 1e6, 2)), " Mt"), paste0(last_hist_year, " emissions (sum)")),
-      stat_card(if (!is.na(n_states)) n_states else "--", if (has_state_data) "States" else "States (rerun pipeline)"),
-      stat_card(if (!is.na(gap_final)) paste0(comma(round(gap_final, 2)), " Mt") else "--", paste0(last_fore_year, " gap"))
+    region_stat_card_row(
+      region_stat_card(comma(fac_count), "Facilities"),
+      region_stat_card(paste0(comma(round(total_2023 / 1e6, 2)), " Mt"), paste0(last_hist_year, " emissions (sum)")),
+      region_stat_card(if (!is.na(n_states)) n_states else "--", if (has_state_data) "States" else "States (rerun pipeline)"),
+      region_stat_card(if (!is.na(gap_final)) paste0(comma(round(gap_final, 2)), " Mt") else "--", paste0(last_fore_year, " gap"))
     )
   })
 
@@ -5175,7 +6346,7 @@ server <- function(input, output, session) {
   observe({
     req(has_eu_data)
     updateSelectInput(session, "eu_sector_select", choices = sector_list_eu_official, selected = sector_list_eu_official[1])
-    updateSelectInput(session, "eu_sector_bucket_select", choices = sector_bucket_list_eu, selected = sector_bucket_list_eu[1])
+    updateSelectInput(session, "eu_sector_bucket_select", choices = eu_sector_bucket_choices(sector_bucket_list_eu), selected = sector_bucket_list_eu[1])
     updateSelectizeInput(session, "eu_facility_select", choices = facility_choices_eu,
                           selected = facility_choices_eu[1], server = TRUE)
   })
@@ -5195,6 +6366,40 @@ server <- function(input, output, session) {
       tags$b("Source: "), "Air_Releases_Sector sheet (EEA official rollup)", tags$br(),
       tags$b("Years covered: "), min(df$year), "-", max(df$year)
     )
+  })
+
+  # Stat-card row + YoY bar, same layout as United States Sector View.
+  # No facility/company count exists in this official EEA sheet (just
+  # sector/year/emissions), so the cards use what IS genuinely real here
+  # -- years reported, latest total, and real observed YoY change --
+  # rather than inventing a count.
+  output$eu_sector_stat_cards <- renderUI({
+    df <- eu_sector_hist()
+    req(nrow(df) > 0)
+    latest_year <- max(df$year)
+    latest_val  <- df$emissions[df$year == latest_year][1]
+    prior_row   <- df %>% filter(year == latest_year - 1)
+    yoy_pct <- if (nrow(prior_row) == 1 && !is.na(prior_row$emissions[1]) && prior_row$emissions[1] != 0) {
+      (latest_val - prior_row$emissions[1]) / prior_row$emissions[1] * 100
+    } else {
+      NA_real_
+    }
+
+    region_stat_card_row(
+      region_stat_card(n_distinct(df$year), "Years reported"),
+      region_stat_card(paste0(comma(round(latest_val / 1e6, 2)), " Mt"), paste0(latest_year, " emissions")),
+      region_stat_card(if (!is.na(yoy_pct)) paste0(sprintf("%+.1f", yoy_pct), "%") else "--", "YoY change"),
+      region_stat_card(paste0(min(df$year), "-", max(df$year)), "Years covered")
+    )
+  })
+
+  output$eu_sector_gap_plot <- renderPlot({
+    df <- eu_sector_hist()
+    req(nrow(df) > 1)
+    p <- region_yoy_bar(df, "emissions", "Mt CO2e change (YoY)",
+                         x_breaks_arg = eu_x_breaks[eu_x_breaks <= 2024], divisor = 1e6)
+    req(!is.null(p))
+    p
   })
 
   output$eu_sector_plot <- renderPlot({
@@ -5222,6 +6427,342 @@ server <- function(input, output, session) {
       datatable(options = list(pageLength = 15, dom = "tp"), rownames = FALSE)
   })
 
+  # ---- Global Sector View: Asia (real, India + Singapore) ----
+  # Same shape as EU's official-sector sub-tab above: sum of real,
+  # company-reported Scope 1 by sector/year, straight from
+  # hist_by_sector_asia (already filtered to sectors with >=3
+  # reporting companies in the pipeline itself).
+  if (has_asia_data) {
+    observe({
+      choices <- sort(unique(as.character(hist_by_sector_asia$sector)))
+      updateSelectInput(session, "asia_sector_view_select", choices = choices, selected = choices[1])
+    })
+
+    asia_sector_view_hist <- reactive({
+      req(input$asia_sector_view_select)
+      hist_by_sector_asia %>% filter(sector == input$asia_sector_view_select) %>% arrange(year)
+    })
+
+    # Real forecast for this sector -- sum of each company's own linear
+    # forecast (future_pred_asia, already the same per-company model
+    # used on the Company Profile tab) across every company in the
+    # selected sector, not a fabricated sector-level trend of its own.
+    asia_sector_view_fore <- reactive({
+      req(input$asia_sector_view_select)
+      future_pred_asia %>%
+        filter(sector == input$asia_sector_view_select) %>%
+        group_by(year) %>%
+        summarise(p50 = sum(p50, na.rm = TRUE), .groups = "drop") %>%
+        arrange(year)
+    })
+
+    output$asia_sector_view_meta <- renderUI({
+      df <- asia_sector_view_hist()
+      req(nrow(df) > 0)
+      tags$div(
+        style = "font-size:12.5px; color:#EAF6F9;",
+        tags$b("Reporting companies: "), max(df$n_companies), tags$br(),
+        tags$b("Years covered: "), min(df$year), "-", max(df$year)
+      )
+    })
+
+    output$asia_sector_view_stat_cards <- renderUI({
+      df <- asia_sector_view_hist()
+      req(nrow(df) > 0)
+      company_count_sector_cards(df)
+    })
+
+    output$asia_sector_view_gap_plot <- renderPlot({
+      df <- asia_sector_view_hist()
+      req(nrow(df) > 1)
+      p <- region_yoy_bar(df, "emissions", "tCO2e change (YoY)")
+      req(!is.null(p))
+      p
+    })
+
+    output$asia_sector_view_plot <- renderPlot({
+      hist_df <- asia_sector_view_hist()
+      fore_df <- asia_sector_view_fore()
+      req(nrow(hist_df) > 0)
+      p <- ggplot() +
+        geom_line(data = hist_df, aes(x = year, y = emissions), color = "#1B4F72", linewidth = 1.1) +
+        geom_point(data = hist_df, aes(x = year, y = emissions), color = "#1B4F72", size = 2)
+
+      if (nrow(fore_df) > 0) {
+        bridge <- bind_rows(
+          hist_df %>% filter(year == max(year)) %>% transmute(year, p50 = emissions),
+          fore_df
+        )
+        p <- p + geom_line(data = bridge, aes(x = year, y = p50), color = "#1B4F72", linewidth = 1.1, linetype = "dashed")
+      }
+
+      p +
+        scale_y_continuous(labels = comma) +
+        labs(
+          title = input$asia_sector_view_select,
+          subtitle = "Solid = observed | Dashed = sum of each company's own linear forecast -- India + Singapore, real company-reported Scope 1 (tCO2e)",
+          x = NULL, y = "tCO2e"
+        ) +
+        theme_minimal(base_size = 13) +
+        theme(plot.subtitle = element_text(color = "grey40", size = 10.5))
+    })
+
+    output$asia_sector_view_table <- renderDT({
+      hist_df <- asia_sector_view_hist()
+      fore_df <- asia_sector_view_fore()
+      req(nrow(hist_df) > 0)
+      hist_tbl <- hist_df %>% transmute(Year = year, Companies = n_companies, `Observed (tCO2e)` = comma(round(emissions)))
+      fore_tbl <- fore_df %>% transmute(Year = year, `Forecast (tCO2e)` = comma(round(p50)))
+      hist_tbl %>%
+        full_join(fore_tbl, by = "Year") %>%
+        arrange(Year) %>%
+        datatable(options = list(pageLength = 15, dom = "tp"), rownames = FALSE)
+    })
+  }
+
+  # ---- Global Sector View: Africa (real, South Africa CDP 2018) ----
+  # Same idea, but a single-year snapshot -- the plot is a one-point
+  # line/point (no trend exists to draw), matching the same honesty
+  # already applied to Africa's Company Profile tab.
+  if (has_africa_data) {
+    observe({
+      choices <- sort(unique(as.character(hist_by_sector_africa$sector)))
+      updateSelectInput(session, "africa_sector_view_select", choices = choices, selected = choices[1])
+    })
+
+    africa_sector_view_hist <- reactive({
+      req(input$africa_sector_view_select)
+      hist_by_sector_africa %>% filter(sector == input$africa_sector_view_select) %>% arrange(year)
+    })
+
+    output$africa_sector_view_meta <- renderUI({
+      df <- africa_sector_view_hist()
+      req(nrow(df) > 0)
+      tags$div(
+        style = "font-size:12.5px; color:#EAF6F9;",
+        tags$b("Reporting companies: "), max(df$n_companies), tags$br(),
+        tags$b("Data year: "), max(df$year), " (single-year CDP disclosure -- no trend exists)"
+      )
+    })
+
+    output$africa_sector_view_plot <- renderPlot({
+      df <- africa_sector_view_hist()
+      req(nrow(df) > 0)
+      ggplot(df, aes(x = factor(year), y = emissions)) +
+        geom_col(fill = "#1B4F72", width = 0.4) +
+        scale_y_continuous(labels = comma) +
+        labs(
+          title = input$africa_sector_view_select,
+          subtitle = "Real, CDP-disclosed Scope 1 (tCO2e) -- South Africa, 2018, summed across reporting companies",
+          x = NULL, y = "tCO2e"
+        ) +
+        theme_minimal(base_size = 13) +
+        theme(plot.subtitle = element_text(color = "grey40", size = 10.5))
+    })
+
+    output$africa_sector_view_table <- renderDT({
+      df <- africa_sector_view_hist()
+      req(nrow(df) > 0)
+      df %>%
+        transmute(Year = year, Companies = n_companies, `Total Scope 1 (tCO2e)` = comma(round(emissions))) %>%
+        datatable(options = list(pageLength = 15, dom = "tp"), rownames = FALSE)
+    })
+  }
+
+  # ---- Global Sector View: Australia (real, NGER GICS-classified) ----
+  # Same shape as Asia's -- a genuine 3-year trend (unlike Africa's
+  # single-year snapshot), sum of real, company-reported Scope 1 by
+  # GICS sector/year, straight from hist_by_sector_australia (already
+  # filtered to sectors with >=3 reporting companies in the pipeline
+  # itself).
+  if (has_australia_data) {
+    observe({
+      choices <- sort(unique(as.character(hist_by_sector_australia$sector)))
+      updateSelectInput(session, "australia_sector_view_select", choices = choices, selected = choices[1])
+    })
+
+    australia_sector_view_hist <- reactive({
+      req(input$australia_sector_view_select)
+      hist_by_sector_australia %>% filter(sector == input$australia_sector_view_select) %>% arrange(year)
+    })
+
+    # Real forecast for this sector -- sum of each company's own linear
+    # forecast (future_pred_australia, the same per-company model used
+    # on the Company Profile tab) across every company in the selected
+    # sector, not a fabricated sector-level trend of its own.
+    australia_sector_view_fore <- reactive({
+      req(input$australia_sector_view_select)
+      future_pred_australia %>%
+        filter(sector == input$australia_sector_view_select) %>%
+        group_by(year) %>%
+        summarise(p50 = sum(p50, na.rm = TRUE), .groups = "drop") %>%
+        arrange(year)
+    })
+
+    output$australia_sector_view_meta <- renderUI({
+      df <- australia_sector_view_hist()
+      req(nrow(df) > 0)
+      tags$div(
+        style = "font-size:12.5px; color:#EAF6F9;",
+        tags$b("Reporting companies: "), max(df$n_companies), tags$br(),
+        tags$b("Years covered: "), min(df$year), "-", max(df$year)
+      )
+    })
+
+    output$australia_sector_view_stat_cards <- renderUI({
+      df <- australia_sector_view_hist()
+      req(nrow(df) > 0)
+      company_count_sector_cards(df)
+    })
+
+    output$australia_sector_view_gap_plot <- renderPlot({
+      df <- australia_sector_view_hist()
+      req(nrow(df) > 1)
+      p <- region_yoy_bar(df, "emissions", "tCO2e change (YoY)")
+      req(!is.null(p))
+      p
+    })
+
+    output$australia_sector_view_plot <- renderPlot({
+      hist_df <- australia_sector_view_hist()
+      fore_df <- australia_sector_view_fore()
+      req(nrow(hist_df) > 0)
+      p <- ggplot() +
+        geom_line(data = hist_df, aes(x = year, y = emissions), color = "#1B4F72", linewidth = 1.1) +
+        geom_point(data = hist_df, aes(x = year, y = emissions), color = "#1B4F72", size = 2)
+
+      if (nrow(fore_df) > 0) {
+        bridge <- bind_rows(
+          hist_df %>% filter(year == max(year)) %>% transmute(year, p50 = emissions),
+          fore_df
+        )
+        p <- p + geom_line(data = bridge, aes(x = year, y = p50), color = "#1B4F72", linewidth = 1.1, linetype = "dashed")
+      }
+
+      p +
+        scale_x_continuous(breaks = scales::pretty_breaks()) +
+        scale_y_continuous(labels = comma) +
+        labs(
+          title = input$australia_sector_view_select,
+          subtitle = "Solid = observed | Dashed = sum of each company's own linear forecast -- NGER, real company-reported Scope 1 (tCO2e)",
+          x = NULL, y = "tCO2e"
+        ) +
+        theme_minimal(base_size = 13) +
+        theme(plot.subtitle = element_text(color = "grey40", size = 10.5))
+    })
+
+    output$australia_sector_view_table <- renderDT({
+      hist_df <- australia_sector_view_hist()
+      fore_df <- australia_sector_view_fore()
+      req(nrow(hist_df) > 0)
+      hist_tbl <- hist_df %>% transmute(Year = year, Companies = n_companies, `Observed (tCO2e)` = comma(round(emissions)))
+      fore_tbl <- fore_df %>% transmute(Year = year, `Forecast (tCO2e)` = comma(round(p50)))
+      hist_tbl %>%
+        full_join(fore_tbl, by = "Year") %>%
+        arrange(Year) %>%
+        datatable(options = list(pageLength = 15, dom = "tp"), rownames = FALSE)
+    })
+  }
+
+  # ---- Global Sector View: Latin America (real, Brazil SASB/SICS) ----
+  # Same shape as Asia's/Australia's -- a genuine multi-year trend, sum
+  # of real, company-reported Scope 1 by sector/year, straight from
+  # hist_by_sector_chile (already filtered to sectors with >=3
+  # reporting companies in the pipeline itself). In practice this is
+  # Brazil-only: Chile's 8 companies are each alone in their own
+  # sector, so none of them ever clear that floor -- nothing to filter
+  # out here explicitly, the pipeline's own threshold already handles it.
+  if (has_chile_data) {
+    observe({
+      choices <- sort(unique(as.character(hist_by_sector_chile$sector)))
+      updateSelectInput(session, "latam_sector_view_select", choices = choices, selected = choices[1])
+    })
+
+    latam_sector_view_hist <- reactive({
+      req(input$latam_sector_view_select)
+      hist_by_sector_chile %>% filter(sector == input$latam_sector_view_select) %>% arrange(year)
+    })
+
+    # Real forecast for this sector -- sum of each company's own linear
+    # forecast (future_pred_chile, the same per-company model used on
+    # the Company Profile tab, covering both Chile and Brazil) across
+    # every company in the selected sector. In practice this is
+    # Brazil-only, same as the historical rollup above, since Chile's
+    # companies never clear the >=3-reporting-companies sector floor.
+    latam_sector_view_fore <- reactive({
+      req(input$latam_sector_view_select)
+      future_pred_chile %>%
+        filter(sector == input$latam_sector_view_select) %>%
+        group_by(year) %>%
+        summarise(p50 = sum(p50, na.rm = TRUE), .groups = "drop") %>%
+        arrange(year)
+    })
+
+    output$latam_sector_view_meta <- renderUI({
+      df <- latam_sector_view_hist()
+      req(nrow(df) > 0)
+      tags$div(
+        style = "font-size:12.5px; color:#EAF6F9;",
+        tags$b("Reporting companies: "), max(df$n_companies), tags$br(),
+        tags$b("Years covered: "), min(df$year), "-", max(df$year)
+      )
+    })
+
+    output$latam_sector_view_stat_cards <- renderUI({
+      df <- latam_sector_view_hist()
+      req(nrow(df) > 0)
+      company_count_sector_cards(df)
+    })
+
+    output$latam_sector_view_gap_plot <- renderPlot({
+      df <- latam_sector_view_hist()
+      req(nrow(df) > 1)
+      p <- region_yoy_bar(df, "emissions", "tCO2e change (YoY)")
+      req(!is.null(p))
+      p
+    })
+
+    output$latam_sector_view_plot <- renderPlot({
+      hist_df <- latam_sector_view_hist()
+      fore_df <- latam_sector_view_fore()
+      req(nrow(hist_df) > 0)
+      p <- ggplot() +
+        geom_line(data = hist_df, aes(x = year, y = emissions), color = "#1B4F72", linewidth = 1.1) +
+        geom_point(data = hist_df, aes(x = year, y = emissions), color = "#1B4F72", size = 2)
+
+      if (nrow(fore_df) > 0) {
+        bridge <- bind_rows(
+          hist_df %>% filter(year == max(year)) %>% transmute(year, p50 = emissions),
+          fore_df
+        )
+        p <- p + geom_line(data = bridge, aes(x = year, y = p50), color = "#1B4F72", linewidth = 1.1, linetype = "dashed")
+      }
+
+      p +
+        scale_x_continuous(breaks = scales::pretty_breaks()) +
+        scale_y_continuous(labels = comma) +
+        labs(
+          title = input$latam_sector_view_select,
+          subtitle = "Solid = observed | Dashed = sum of each company's own linear forecast -- Brazil, real company-reported Scope 1 (tCO2e)",
+          x = NULL, y = "tCO2e"
+        ) +
+        theme_minimal(base_size = 13) +
+        theme(plot.subtitle = element_text(color = "grey40", size = 10.5))
+    })
+
+    output$latam_sector_view_table <- renderDT({
+      hist_df <- latam_sector_view_hist()
+      fore_df <- latam_sector_view_fore()
+      req(nrow(hist_df) > 0)
+      hist_tbl <- hist_df %>% transmute(Year = year, Companies = n_companies, `Observed (tCO2e)` = comma(round(emissions)))
+      fore_tbl <- fore_df %>% transmute(Year = year, `Forecast (tCO2e)` = comma(round(p50)))
+      hist_tbl %>%
+        full_join(fore_tbl, by = "Year") %>%
+        arrange(Year) %>%
+        datatable(options = list(pageLength = 15, dom = "tp"), rownames = FALSE)
+    })
+  }
+
   # ---- Model's own sector grouping (historical + real forecast) ----
 
   eu_sector_bucket_hist <- reactive({
@@ -5242,6 +6783,44 @@ server <- function(input, output, session) {
       tags$b("Facilities in this bucket: "), max(df$n_facilities, na.rm = TRUE), tags$br(),
       tags$b("Years covered: "), min(df$year), "-", max(df$year)
     )
+  })
+
+  # Stat-card row, same layout as United States Sector View -- this
+  # sub-tab is the closest real match to it (a genuine forecast exists
+  # here, via fore_by_sector_bucket_eu), but there's no Industry Target
+  # wired in yet, so the 4th card shows the real forecast total instead
+  # of a fabricated gap.
+  output$eu_sector_bucket_stat_cards <- renderUI({
+    df <- eu_sector_bucket_hist()
+    fc <- eu_sector_bucket_fore()
+    req(nrow(df) > 0)
+    latest_year <- max(df$year)
+    latest_val  <- df$emissions[df$year == latest_year][1]
+    fac_count   <- max(df$n_facilities, na.rm = TRUE)
+    prior_row   <- df %>% filter(year == latest_year - 1)
+    yoy_pct <- if (nrow(prior_row) == 1 && !is.na(prior_row$emissions[1]) && prior_row$emissions[1] != 0) {
+      (latest_val - prior_row$emissions[1]) / prior_row$emissions[1] * 100
+    } else {
+      NA_real_
+    }
+    fore_final <- if (nrow(fc) > 0) fc$p50[fc$year == max(fc$year)][1] else NA_real_
+    fore_year  <- if (nrow(fc) > 0) max(fc$year) else NA_integer_
+
+    region_stat_card_row(
+      region_stat_card(comma(fac_count), "Facilities"),
+      region_stat_card(paste0(comma(round(latest_val / 1e6, 2)), " Mt"), paste0(latest_year, " emissions")),
+      region_stat_card(if (!is.na(yoy_pct)) paste0(sprintf("%+.1f", yoy_pct), "%") else "--", "YoY change"),
+      region_stat_card(if (!is.na(fore_final)) paste0(comma(round(fore_final / 1e6, 2)), " Mt") else "--",
+                        if (!is.na(fore_year)) paste0(fore_year, " forecast") else "Forecast")
+    )
+  })
+
+  output$eu_sector_bucket_gap_plot <- renderPlot({
+    df <- eu_sector_bucket_hist()
+    req(nrow(df) > 1)
+    p <- region_yoy_bar(df, "emissions", "Mt CO2e change (YoY)", x_breaks_arg = eu_x_breaks, divisor = 1e6)
+    req(!is.null(p))
+    p
   })
 
   output$eu_sector_bucket_plot <- renderPlot({
@@ -5311,7 +6890,7 @@ server <- function(input, output, session) {
       style = "font-size:12.5px; color:#5D6D7E;",
       tags$b("Country: "), m$country[1], tags$br(),
       tags$b("Activity code: "), m$activity_code[1], tags$br(),
-      tags$b("Model sector bucket: "), m$sector_bucket[1], tags$br(),
+      tags$b("Model sector bucket: "), eu_sector_code_label(m$sector_bucket[1]), tags$br(),
       tags$b("City: "), if (!is.na(m$city[1])) m$city[1] else "not reported"
     )
   })
@@ -5381,6 +6960,11 @@ server <- function(input, output, session) {
   updateSelectizeInput(session, "eu_cp_existing_picker", choices = eu_company_choices_alpha,
                         selected = character(0), server = TRUE)
 
+  updateSelectizeInput(session, "eu_cp_match", choices = eu_company_choices_alpha,
+                        selected = character(0), server = TRUE)
+  wire_single_match_company(input, session, "eu_cp", "eu_cp_existing_picker", "eu_cp_new_name",
+                             choices_fn = function() eu_company_choices_alpha)
+
   observe({
     val <- if (identical(input$eu_cp_mode, "existing")) {
       if (is.null(input$eu_cp_existing_picker)) "" else input$eu_cp_existing_picker
@@ -5424,6 +7008,36 @@ server <- function(input, output, session) {
     }
   }, ignoreInit = TRUE)
 
+  # Sidebar header -- matches the US tab's treatment: company name as
+  # the title, best-matching sector and location (country) underneath
+  # as plain read-only text, replacing the editable Sector dropdown.
+  output$eu_cp_profile_header <- renderUI({
+    company <- if (!is.null(input$eu_cp_company_name) && nzchar(trimws(input$eu_cp_company_name))) {
+      trimws(input$eu_cp_company_name)
+    } else {
+      "New Company"
+    }
+    sector  <- if (!is.null(input$eu_cp_sector) && nzchar(input$eu_cp_sector)) input$eu_cp_sector else NULL
+    country <- if (!is.null(input$eu_cp_country) && nzchar(input$eu_cp_country)) input$eu_cp_country else NULL
+
+    tags$div(
+      style = "margin-bottom:2px;",
+      tags$h4(style = "margin:0 0 4px 0; font-weight:700; color:#FFFFFF; font-size:16px; line-height:1.3;", company),
+      tags$div(
+        style = "font-size:12px; color:#EAF6F9; line-height:1.5;",
+        # The EU sector field is the model's own grouping, keyed on
+        # E-PRTR Annex I activity codes (e.g. "3(c)(i)") rather than a
+        # descriptive name -- translated to a readable label here via
+        # eu_sector_code_label() (built from the official Annex I
+        # category list), with the raw code kept alongside in
+        # parentheses for traceability. The underlying value used for
+        # matching/filtering is completely unaffected.
+        if (!is.null(sector)) eu_sector_code_label(sector) else "Sector not set",
+        if (!is.null(country)) tags$span(" — ", country) else NULL
+      )
+    )
+  })
+
   output$eu_cp_match_status <- renderUI({
     m <- tryCatch(eu_cp_match(), error = function(e) NULL)
     company_typed <- if (is.null(input$eu_cp_company_name)) "" else trimws(input$eu_cp_company_name)
@@ -5446,13 +7060,12 @@ server <- function(input, output, session) {
 
   # ---- Calculate-on-demand trigger for EU Company Profile -- same
   # pattern as the US tab's intake_calc_trigger(). ----
-  eu_cp_calc_trigger <- eventReactive(input$eu_cp_calculate, { Sys.time() }, ignoreNULL = FALSE)
 
   # ---- Excel template download/upload -- same pattern as the US tab.
-  # Reuses the exact same 4-column template (Year/Scope 1/2/3) for
-  # consistency (one template to remember across both tabs) even
-  # though EU only reads the Scope 1 column -- Scope 2/3 columns are
-  # simply ignored here if present. ----
+  # Reuses the exact same 4-column template (Year/Scope 1/2/3). Scope
+  # 2/3 columns are now read too (per direct request, same as US) --
+  # optional; a template with only Year + Scope 1 filled in still
+  # works exactly as before. ----
   output$eu_cp_template_download <- downloadHandler(
     filename = function() "emissions_data_template.xlsx",
     content = function(file) {
@@ -5486,23 +7099,42 @@ server <- function(input, output, session) {
       }
       year_col <- find_col("Year")
       s1_col   <- find_col("Scope 1 (tCO2e)")
+      s2_col   <- find_col("Scope 2 (tCO2e)")
+      s3_col   <- find_col("Scope 3 (tCO2e)")
 
       missing_cols <- c(if (is.na(year_col)) "Year", if (is.na(s1_col)) "Scope 1 (tCO2e)")
       if (length(missing_cols) > 0) {
         list(error = paste0("Missing required column(s): ", paste(missing_cols, collapse = ", "),
                              ". Found these columns instead: ", paste(names(df), collapse = ", ")))
       } else {
-        df <- df[!is.na(df[[year_col]]) & !is.na(df[[s1_col]]), ]
-        if (nrow(df) == 0) {
+        df1 <- df[!is.na(df[[year_col]]) & !is.na(df[[s1_col]]), ]
+        if (nrow(df1) == 0) {
           list(error = "No rows with both Year and Scope 1 filled in.")
         } else {
-          list(csv = paste0(df[[year_col]], ",", df[[s1_col]], collapse = "\n"), n_years = nrow(df))
+          # Scope 2/3 are optional -- each parsed independently (their
+          # own rows with non-missing values), so a company that only
+          # ever measured Scope 1 still loads cleanly; Scope 2/3 then
+          # simply stay empty and fall back to the ratio estimate.
+          s2_csv <- if (!is.na(s2_col)) {
+            df2 <- df[!is.na(df[[year_col]]) & !is.na(df[[s2_col]]), ]
+            if (nrow(df2) > 0) paste0(df2[[year_col]], ",", df2[[s2_col]], collapse = "\n") else NULL
+          } else NULL
+          s3_csv <- if (!is.na(s3_col)) {
+            df3 <- df[!is.na(df[[year_col]]) & !is.na(df[[s3_col]]), ]
+            if (nrow(df3) > 0) paste0(df3[[year_col]], ",", df3[[s3_col]], collapse = "\n") else NULL
+          } else NULL
+          list(csv = paste0(df1[[year_col]], ",", df1[[s1_col]], collapse = "\n"), n_years = nrow(df1),
+               s2_csv = s2_csv, s3_csv = s3_csv)
         }
       }
     }, error = function(e) list(error = paste0("Could not read this file: ", conditionMessage(e))))
 
     eu_cp_template_parsed(result)
-    if (is.null(result$error)) updateTextAreaInput(session, "eu_cp_emissions_csv", value = result$csv)
+    if (is.null(result$error)) {
+      updateTextAreaInput(session, "eu_cp_emissions_csv", value = result$csv)
+      if (!is.null(result$s2_csv)) updateTextAreaInput(session, "eu_cp_emissions_csv_s2", value = result$s2_csv)
+      if (!is.null(result$s3_csv)) updateTextAreaInput(session, "eu_cp_emissions_csv_s3", value = result$s3_csv)
+    }
   })
 
   output$eu_cp_template_upload_status <- renderUI({
@@ -5538,50 +7170,579 @@ server <- function(input, output, session) {
       group_by(year) %>% summarise(p50 = sum(p50, na.rm = TRUE), .groups = "drop") %>% arrange(year)
   })
 
+  # Real Scope 2/3 historical data, if provided -- entirely optional,
+  # same contract as the US tab's intake_user_data_s2()/_s3(): NULL
+  # means "no real data for this scope", in which case callers fall
+  # back to the Hertwich & Wood ratio estimate (get_scope23_ratio_eu()).
+  eu_cp_user_data_s2 <- reactive({
+    req(input$eu_cp_has_data_s23 == "yes")
+    parse_scope_csv(input$eu_cp_emissions_csv_s2)
+  })
+  eu_cp_user_data_s3 <- reactive({
+    req(input$eu_cp_has_data_s23 == "yes")
+    parse_scope_csv(input$eu_cp_emissions_csv_s3)
+  })
+
+  # Scope 1's own history + forecast, combined into one series -- the
+  # "s1_full" anchor that compute_option_b_forecast() (shared with the
+  # US tab) needs to extend a real Scope 2/3 series forward using
+  # Scope 1's own growth shape.
+  eu_cp_s1_full_series <- reactive({
+    hist_df <- eu_cp_user_data() %>% transmute(year, value = emissions)
+    fore_df <- tryCatch(eu_cp_forecast(), error = function(e) tibble())
+    fore_df <- if (nrow(fore_df) > 0) fore_df %>% transmute(year, value = p50) else NULL
+    bind_rows(hist_df, fore_df) %>% arrange(year) %>% distinct(year, .keep_all = TRUE)
+  })
+
   output$eu_cp_scope_note <- renderUI({
     req(has_eu_data)
     m <- tryCatch(eu_cp_match(), error = function(e) NULL)
-    tags$div(
-      style = "background:#EBF5FB; border-left:4px solid #2980B9; border-radius:4px; padding:0.6rem 1rem; margin-bottom:12px; font-size:12.5px;",
-      tags$b("Approximate Scope 1 from EPRTR "), "(CO2 + CH4 + N2O + SF6, IPCC AR6 GWP-converted). Not an official Scope 1 inventory.",
-      if (is.null(m)) tags$span(" No forecast for a new, unmatched company -- the panel model only covers matched real EPRTR facilities.")
-    )
+    # The "Approximate Scope 1 from EPRTR (CO2 + CH4 + N2O + SF6, IPCC
+    # AR6 GWP-converted). Not an official Scope 1 inventory." banner
+    # was removed per direct request. The unmatched-company forecast
+    # warning below is unrelated to that methodology disclaimer, so it
+    # still shows on its own when relevant.
+    if (is.null(m)) {
+      tags$div(
+        style = "background:#EBF5FB; border-left:4px solid #2980B9; border-radius:4px; padding:0.6rem 1rem; margin-bottom:12px; font-size:12.5px;",
+        "No forecast for a new, unmatched company -- the panel model only covers matched real EPRTR facilities."
+      )
+    } else {
+      NULL
+    }
   })
 
-  output$eu_cp_trend_plot <- renderPlot({
-    eu_cp_calc_trigger()
-    isolate({
-      hist_df <- eu_cp_user_data()
-      req(nrow(hist_df) > 0)
-      fore_df <- tryCatch(eu_cp_forecast(), error = function(e) tibble())
+  # SBTi for EU -- now covers all 3 scopes (per direct request, same
+  # approach as the US tab), via the shared eu_cp_sbti_calc() helper
+  # above: Scope 2/3 base/mry values are the Hertwich & Wood ratio
+  # applied to this company's OWN Scope 1 level, same discipline as the
+  # ratio fallback used throughout this tab wherever no real Scope 2/3
+  # data has been pasted in.
+  eu_cp_sbti_result <- reactive({
+    hist_df <- eu_cp_user_data()
+    req(!is.null(hist_df), nrow(hist_df) > 0)
+    company_nm <- if (is.null(input$eu_cp_company_name) || !nzchar(input$eu_cp_company_name)) "Company" else input$eu_cp_company_name
 
-      p <- ggplot() +
-        geom_line(data = hist_df, aes(x = year, y = emissions), color = "#34495E", linewidth = 1.1) +
-        geom_point(data = hist_df, aes(x = year, y = emissions), color = "#34495E", size = 1.8)
+    base_year <- min(hist_df$year); base_s1 <- hist_df$emissions[hist_df$year == base_year][1]
+    mry_year  <- max(hist_df$year); mry_s1  <- hist_df$emissions[hist_df$year == mry_year][1]
 
-      if (nrow(fore_df) > 0) {
-        bridge <- bind_rows(hist_df %>% filter(year == max(year)) %>% transmute(year, p50 = emissions), fore_df)
-        p <- p + geom_line(data = bridge, aes(x = year, y = p50), color = "#34495E", linewidth = 1.1, linetype = "dashed")
+    eu_cp_sbti_calc(base_year, base_s1, mry_year, mry_s1, input$eu_cp_target_year, input$eu_cp_sector, company_nm)
+  })
+
+  # ---- Industry benchmark for EU (scale-adjusted) ----
+  # Mirrors the US tab's intake_sector_benchmark()/intake_benchmark_n_fac():
+  # hist_by_sector_bucket_eu / fore_by_sector_bucket_eu are already
+  # sector_bucket+year aggregates (total emissions + facility count) from
+  # the same pipeline that feeds the "Sector Benchmark" tab -- dividing by
+  # n_facilities gives a per-facility average (a mean, not a median --
+  # this pre-aggregated file doesn't carry the raw per-facility values a
+  # median would need), then scaled up by THIS company's own facility
+  # count, same "apples-to-apples" discipline as the US side.
+  eu_cp_benchmark_n_fac <- reactive({
+    fac <- tryCatch(eu_cp_matched_facilities(), error = function(e) NULL)
+    if (is.null(fac) || nrow(fac) == 0) 1 else nrow(fac)
+  })
+
+  eu_cp_sector_benchmark <- reactive({
+    req(input$eu_cp_sector, has_eu_data)
+    hist_by_sector_bucket_eu %>%
+      filter(sector_bucket == input$eu_cp_sector) %>%
+      arrange(year) %>%
+      transmute(year, avg_emissions = emissions / pmax(n_facilities, 1))
+  })
+
+  eu_cp_sector_forecast_benchmark <- reactive({
+    req(input$eu_cp_sector, has_eu_data)
+    hist_last <- hist_by_sector_bucket_eu %>%
+      filter(sector_bucket == input$eu_cp_sector, year == suppressWarnings(max(year)))
+    n_fac_bucket <- if (nrow(hist_last) > 0) hist_last$n_facilities[1] else 1
+    fore_by_sector_bucket_eu %>%
+      filter(sector_bucket == input$eu_cp_sector) %>%
+      arrange(year) %>%
+      transmute(year, avg_p50 = p50 / pmax(n_fac_bucket, 1))
+  })
+
+  # Industry Target -- the SAME SBTi engine as the company's own purple/
+  # green line above, run on the sector benchmark's (scale-adjusted)
+  # numbers instead. Distinct from the grey "Industry emissions" line
+  # itself: grey is where the industry currently IS, this is where the
+  # industry's own SBTi-methodology trajectory says it's headed.
+  eu_cp_industry_sbti_result <- reactive({
+    req(input$eu_cp_sector)
+    hist_df <- eu_cp_user_data()
+    req(!is.null(hist_df), nrow(hist_df) > 0)
+
+    n_fac_cp <- eu_cp_benchmark_n_fac()
+    sec_bm <- tryCatch(eu_cp_sector_benchmark(), error = function(e) tibble())
+    req(nrow(sec_bm) > 0)
+
+    base_year <- min(hist_df$year); mry_year <- max(hist_df$year)
+    get_bm <- function(yr) {
+      row <- sec_bm %>% filter(year == yr)
+      if (nrow(row) == 0) return(NA_real_)
+      row$avg_emissions[1] * n_fac_cp
+    }
+    base_e <- get_bm(base_year)
+    req(!is.na(base_e))
+    mry_e <- get_bm(mry_year)
+
+    eu_cp_sbti_calc(base_year, base_e, mry_year, mry_e, input$eu_cp_target_year, input$eu_cp_sector, "Industry benchmark")
+  })
+
+  output$eu_cp_sbti_error <- renderUI({
+    res <- tryCatch(eu_cp_sbti_result(), error = function(e) NULL)
+    req(!is.null(res), !is.null(res$error))
+    tags$div(style = "color:#C0392B; background:#FDEDEC; border-radius:6px; padding:0.6rem 1rem; margin-bottom:12px;", res$error)
+  })
+
+  output$eu_cp_sbti_plot <- renderPlot({
+    
+      result <- tryCatch(eu_cp_sbti_result(), error = function(e) list(error = conditionMessage(e)))
+      req(is.null(result$error))
+      df <- result$path
+      req(nrow(df) > 0)
+      ggplot(df, aes(x = year, y = scope1_emissions)) +
+        geom_line(color = "#2980B9", linewidth = 1.2) + geom_point(color = "#2980B9", size = 1.8) +
+        scale_x_continuous(breaks = scales::pretty_breaks()) + scale_y_continuous(labels = comma) +
+        labs(
+          title = if (nzchar(result$company_name)) result$company_name else "SBTi Target Pathway",
+          subtitle = "Absolute Contraction Approach | 1.5C | Net Zero 2050 -- Scope 1 only (approx., from EPRTR)",
+          x = NULL, y = "Emissions (tCO2e)"
+        ) +
+        theme_minimal(base_size = 14) + theme(plot.subtitle = element_text(color = "grey40", size = 11))
+    
+  })
+
+  output$eu_cp_sbti_table <- renderDT({
+    
+      result <- tryCatch(eu_cp_sbti_result(), error = function(e) list(error = conditionMessage(e)))
+      if (!is.null(result$error)) return(datatable(data.frame(Error = result$error), rownames = FALSE, options = list(dom = "t")))
+      df <- result$path %>% mutate(across(-year, ~round(.x)))
+      datatable(df, rownames = FALSE, options = list(pageLength = 20, dom = "tp"),
+                colnames = c("Year", "Scope 1 (tCO2e)", "Total (tCO2e)"))
+    
+  })
+
+  # Level/gap bars -- now include the Industry Target (the scale-
+  # adjusted sector benchmark run through the same SBTi engine), per
+  # direct request: "own target, SBTi, industry benchmark (scale
+  # adjusted), and 3 carbon gaps" -- same approach as the US tab.
+  eu_cp_scope_gap_df <- reactive({
+    hist_df <- eu_cp_user_data()
+    req(!is.null(hist_df), nrow(hist_df) > 0)
+
+    sbti_result <- eu_cp_sbti_result()
+    req(is.null(sbti_result$error), !is.null(sbti_result$path), nrow(sbti_result$path) > 0)
+
+    base_year <- max(hist_df$year); base_val <- hist_df$emissions[hist_df$year == base_year][1]
+    target_year <- input$eu_cp_target_year
+    req(!is.null(target_year), target_year > base_year)
+
+    fc <- tryCatch(eu_cp_forecast(), error = function(e) tibble())
+    forecast_df <- if (nrow(fc) > 0) fc %>% transmute(year, scope1_forecast = p50) else tibble(year = base_year:target_year, scope1_forecast = base_val)
+
+    target_years <- base_year:target_year
+    target_vals <- base_val * (1 - input$eu_cp_target_reduction / 100) ^ ((target_years - base_year) / (target_year - base_year))
+    own_df <- tibble(year = target_years, scope1_target_own = target_vals)
+
+    sbti_df <- sbti_result$path %>% transmute(year, scope1_target_sbti = scope1_emissions)
+
+    industry_result <- tryCatch(eu_cp_industry_sbti_result(), error = function(e) list(error = conditionMessage(e)))
+    industry_df <- if (is.null(industry_result$error) && !is.null(industry_result$path) && nrow(industry_result$path) > 0) {
+      industry_result$path %>% transmute(year, scope1_target_industry = scope1_emissions)
+    } else {
+      tibble(year = target_years, scope1_target_industry = NA_real_)
+    }
+
+    forecast_df %>% full_join(own_df, by = "year") %>% full_join(sbti_df, by = "year") %>%
+      full_join(industry_df, by = "year") %>% arrange(year)
+  })
+
+  output$eu_cp_level_bar_s1 <- renderPlot({
+    
+      df <- tryCatch(eu_cp_scope_gap_df(), error = function(e) NULL)
+      req(!is.null(df), nrow(df) > 0)
+      make_scope_level_bar_plot(df, "scope1_forecast", "scope1_target_own", "scope1_target_sbti",
+                                  industry_col = "scope1_target_industry", real_data = eu_cp_user_data())
+    
+  })
+
+  output$eu_cp_gap_bar_s1 <- renderPlot({
+    
+      df <- tryCatch(eu_cp_scope_gap_df(), error = function(e) NULL)
+      req(!is.null(df), nrow(df) > 0)
+      df <- df %>% mutate(gap_own = scope1_forecast - scope1_target_own,
+                           gap_sbti = scope1_forecast - scope1_target_sbti,
+                           gap_industry = scope1_forecast - scope1_target_industry)
+      make_scope_gap_pair_plot(df, "gap_own", "gap_sbti", industry_col = "gap_industry")
+    
+  })
+
+  # Generalized version of eu_cp_scope_gap_df() above, for Scope 2/3
+  # (per direct request, same approach as the US tab): same shape/
+  # column names (scope1_forecast/scope1_target_own/scope1_target_sbti/
+  # scope1_target_industry) so it plugs into the SAME
+  # make_scope_level_bar_plot()/make_scope_gap_pair_plot() calls
+  # unchanged. sbti_col picks which column of eu_cp_sbti_result()'s /
+  # eu_cp_industry_sbti_result()'s path this scope reads (scope2_emissions/
+  # scope3_emissions) -- both ratio-scaled off Scope 1 by the shared
+  # eu_cp_sbti_calc() helper, same discipline as everywhere else on this
+  # tab; NA (omitted from the chart) if that sector has no ratio at all
+  # (categories 7-9).
+  build_eu_cp_scope_gap_df <- function(scope_mult, sbti_col, real_data_reactive = NULL) {
+    hist_df <- eu_cp_user_data()
+    req(!is.null(hist_df), nrow(hist_df) > 0)
+    target_year <- input$eu_cp_target_year
+    req(!is.null(target_year))
+
+    real_data <- if (!is.null(real_data_reactive)) tryCatch(real_data_reactive(), error = function(e) NULL) else NULL
+    using_real_data <- !is.null(real_data) && nrow(real_data) > 0
+
+    if (using_real_data) {
+      base_year <- max(real_data$year); base_val <- real_data$emissions[real_data$year == base_year][1]
+      fwd <- compute_option_b_forecast(real_data, eu_cp_s1_full_series())
+      forecast_df <- if (!is.null(fwd)) fwd %>% transmute(year, scope1_forecast = value) else tibble(year = base_year, scope1_forecast = base_val)
+    } else {
+      base_year <- max(hist_df$year); base_val <- hist_df$emissions[hist_df$year == base_year][1] * scope_mult
+      fc <- tryCatch(eu_cp_forecast(), error = function(e) tibble())
+      forecast_df <- if (nrow(fc) > 0) fc %>% transmute(year, scope1_forecast = p50 * scope_mult) else tibble(year = base_year:target_year, scope1_forecast = base_val)
+    }
+    req(target_year > base_year)
+
+    target_years <- base_year:target_year
+    target_vals <- base_val * (1 - input$eu_cp_target_reduction / 100) ^ ((target_years - base_year) / (target_year - base_year))
+    own_df  <- tibble(year = target_years, scope1_target_own = target_vals)
+
+    sbti_result <- tryCatch(eu_cp_sbti_result(), error = function(e) list(error = conditionMessage(e)))
+    sbti_df <- if (is.null(sbti_result$error) && !is.null(sbti_result$path) && sbti_col %in% names(sbti_result$path)) {
+      sbti_result$path %>% transmute(year, scope1_target_sbti = .data[[sbti_col]])
+    } else {
+      tibble(year = target_years, scope1_target_sbti = NA_real_)
+    }
+
+    industry_result <- tryCatch(eu_cp_industry_sbti_result(), error = function(e) list(error = conditionMessage(e)))
+    industry_df <- if (is.null(industry_result$error) && !is.null(industry_result$path) && sbti_col %in% names(industry_result$path)) {
+      industry_result$path %>% transmute(year, scope1_target_industry = .data[[sbti_col]])
+    } else {
+      tibble(year = target_years, scope1_target_industry = NA_real_)
+    }
+
+    forecast_df %>% full_join(own_df, by = "year") %>% full_join(sbti_df, by = "year") %>%
+      full_join(industry_df, by = "year") %>% arrange(year)
+  }
+
+  output$eu_cp_level_bar_s2 <- renderPlot({
+    
+      ratio <- get_scope23_ratio_eu(input$eu_cp_sector)
+      req(!is.null(ratio))
+      df <- tryCatch(build_eu_cp_scope_gap_df(ratio$scope2_multiplier, "scope2_emissions", eu_cp_user_data_s2), error = function(e) NULL)
+      req(!is.null(df), nrow(df) > 0)
+      real <- tryCatch(eu_cp_user_data_s2(), error = function(e) NULL)
+      bar_real_data <- if (!is.null(real) && nrow(real) > 0) real else eu_cp_user_data() %>% mutate(emissions = emissions * ratio$scope2_multiplier)
+      make_scope_level_bar_plot(df, "scope1_forecast", "scope1_target_own", "scope1_target_sbti",
+                                  industry_col = "scope1_target_industry", real_data = bar_real_data)
+    
+  })
+
+  output$eu_cp_gap_bar_s2 <- renderPlot({
+    
+      ratio <- get_scope23_ratio_eu(input$eu_cp_sector)
+      req(!is.null(ratio))
+      df <- tryCatch(build_eu_cp_scope_gap_df(ratio$scope2_multiplier, "scope2_emissions", eu_cp_user_data_s2), error = function(e) NULL)
+      req(!is.null(df), nrow(df) > 0)
+      df <- df %>% mutate(gap_own = scope1_forecast - scope1_target_own,
+                           gap_sbti = scope1_forecast - scope1_target_sbti,
+                           gap_industry = scope1_forecast - scope1_target_industry)
+      make_scope_gap_pair_plot(df, "gap_own", "gap_sbti", industry_col = "gap_industry")
+    
+  })
+
+  output$eu_cp_level_bar_s3 <- renderPlot({
+    
+      ratio <- get_scope23_ratio_eu(input$eu_cp_sector)
+      req(!is.null(ratio))
+      df <- tryCatch(build_eu_cp_scope_gap_df(ratio$scope3_multiplier, "scope3_emissions", eu_cp_user_data_s3), error = function(e) NULL)
+      req(!is.null(df), nrow(df) > 0)
+      real <- tryCatch(eu_cp_user_data_s3(), error = function(e) NULL)
+      bar_real_data <- if (!is.null(real) && nrow(real) > 0) real else eu_cp_user_data() %>% mutate(emissions = emissions * ratio$scope3_multiplier)
+      make_scope_level_bar_plot(df, "scope1_forecast", "scope1_target_own", "scope1_target_sbti",
+                                  industry_col = "scope1_target_industry", real_data = bar_real_data)
+    
+  })
+
+  output$eu_cp_gap_bar_s3 <- renderPlot({
+    
+      ratio <- get_scope23_ratio_eu(input$eu_cp_sector)
+      req(!is.null(ratio))
+      df <- tryCatch(build_eu_cp_scope_gap_df(ratio$scope3_multiplier, "scope3_emissions", eu_cp_user_data_s3), error = function(e) NULL)
+      req(!is.null(df), nrow(df) > 0)
+      df <- df %>% mutate(gap_own = scope1_forecast - scope1_target_own,
+                           gap_sbti = scope1_forecast - scope1_target_sbti,
+                           gap_industry = scope1_forecast - scope1_target_industry)
+      make_scope_gap_pair_plot(df, "gap_own", "gap_sbti", industry_col = "gap_industry")
+    
+  })
+
+  # Generalized (per direct request) -- Scope 1 was the only scope this
+  # chart could ever plot; refactored into a shared function exactly
+  # like the US tab's build_intake_trend_plot(), so Scope 2/3 get the
+  # identical chart with the same colors/linetypes/"today"/gap-note
+  # treatment, driven by scope_mult (the Hertwich & Wood ratio
+  # multiplier -- 1 for Scope 1 itself) and an optional real_data_
+  # reactive for Scope 2/3's own pasted/uploaded data, when present.
+  build_eu_cp_trend_plot <- function(scope_mult, sbti_col, scope_label, real_data_reactive = NULL) {
+    hist_df <- eu_cp_user_data()
+    req(nrow(hist_df) > 0)
+    fore_df <- tryCatch(eu_cp_forecast(), error = function(e) tibble())
+
+    real_data <- if (!is.null(real_data_reactive)) tryCatch(real_data_reactive(), error = function(e) NULL) else NULL
+    using_real_data <- !is.null(real_data) && nrow(real_data) > 0
+
+    # PALETTE/CLARITY FIX -- brought in line with the US Company
+    # Profile treatment: (1) colors now match make_scope_level_bar_plot()
+    # exactly (Your Emissions=#C0392B, Your Own Goal=#8E44AD, SBTi
+    # Target=#27AE60), since that bar chart sits directly below this
+    # one and plots the same series -- it previously used an
+    # unrelated dark-slate/purple scheme that didn't match; (2)
+    # observed vs. forecast is now a light/dark tint of the same
+    # hue, not solid-vs-dashed alone; (3) built as a single series
+    # factor (like the US chart) so it gets the same end-of-line
+    # labels, "today" shading, and shared theme instead of a
+    # text-only subtitle key.
+    series_list <- list()
+
+    # Industry emissions (observed + forecast), scale-adjusted to this
+    # company's own facility count -- same treatment/ordering as the US
+    # tab's "Industry emissions" line (added first, so it reads as
+    # context sitting behind "Emissions"). Uses the model's own sector-
+    # bucket benchmark (hist_by_sector_bucket_eu / fore_by_sector_bucket_eu),
+    # per direct request.
+    n_fac_cp <- tryCatch(eu_cp_benchmark_n_fac(), error = function(e) 1)
+    sec_bm <- tryCatch(eu_cp_sector_benchmark(), error = function(e) tibble())
+    if (nrow(sec_bm) > 0) {
+      series_list[["Industry emissions"]] <- sec_bm %>% transmute(year, value = avg_emissions * n_fac_cp * scope_mult)
+      sec_fc <- tryCatch(eu_cp_sector_forecast_benchmark(), error = function(e) tibble())
+      if (nrow(sec_fc) > 0) {
+        bm_last_year <- max(sec_bm$year)
+        bridge_bm_fore <- bind_rows(
+          sec_bm %>% filter(year == bm_last_year) %>% transmute(year, avg_p50 = avg_emissions),
+          sec_fc %>% filter(year > bm_last_year)
+        )
+        if (nrow(bridge_bm_fore) > 1) {
+          series_list[["Industry emissions (forecast)"]] <- bridge_bm_fore %>% transmute(year, value = avg_p50 * n_fac_cp * scope_mult)
+        }
       }
+    }
 
-      if (isTRUE(input$eu_cp_set_target)) {
-        base_year <- max(hist_df$year); base_val <- hist_df$emissions[hist_df$year == base_year][1]
+    if (using_real_data) {
+      # Real data for this scope -- shown as-is, no rescaling. Forecast
+      # anchors to this scope's own last real year, then extends using
+      # Scope 1's own growth shape (same "Option B" helper the US tab
+      # uses -- compute_option_b_forecast() is generic, not US-specific).
+      series_list[["Emissions"]] <- real_data %>% transmute(year, value = emissions)
+      fwd_series <- compute_option_b_forecast(real_data, eu_cp_s1_full_series())
+      if (!is.null(fwd_series)) series_list[["Emissions (forecast)"]] <- fwd_series
+    } else {
+      series_list[["Emissions"]] <- hist_df %>% transmute(year, value = emissions * scope_mult)
+      if (nrow(fore_df) > 0) {
+        bridge <- bind_rows(hist_df %>% filter(year == max(year)) %>% transmute(year, value = emissions * scope_mult),
+                             fore_df %>% transmute(year, value = p50 * scope_mult))
+        series_list[["Emissions (forecast)"]] <- bridge
+      }
+    }
+
+    if (isTRUE(input$eu_cp_set_target)) {
+      # This scope's OWN baseline where real data exists (last real
+      # year/value for this scope); otherwise Scope 1's baseline scaled
+      # by the ratio -- same "real data wins, ratio is the fallback"
+      # discipline as the Emissions series above.
+      if (using_real_data) {
+        base_year <- max(real_data$year); base_val <- real_data$emissions[real_data$year == base_year][1]
+      } else {
+        base_year <- max(hist_df$year); base_val <- hist_df$emissions[hist_df$year == base_year][1] * scope_mult
+      }
+      if (input$eu_cp_target_year > base_year) {
         target_years <- base_year:input$eu_cp_target_year
         target_vals <- base_val * (1 - input$eu_cp_target_reduction / 100) ^ ((target_years - base_year) / (input$eu_cp_target_year - base_year))
-        targ_df <- tibble(year = target_years, target = target_vals)
-        p <- p + geom_line(data = targ_df, aes(x = year, y = target), color = target_color, linewidth = 1.1, linetype = "dotted")
+        series_list[["Your stated goal"]] <- tibble(year = target_years, value = target_vals)
+      }
+    }
+
+    # SBTi -- now covers all 3 scopes (per direct request, same approach
+    # as the US tab): Scope 2/3 columns are the Hertwich & Wood ratio
+    # applied to this company's own Scope 1 SBTi baseline (see
+    # eu_cp_sbti_calc()) -- omitted entirely if that sector has no ratio
+    # at all (categories 7-9), same discipline as everywhere else here.
+    sbti_result <- tryCatch(eu_cp_sbti_result(), error = function(e) list(error = conditionMessage(e)))
+    if (is.null(sbti_result$error) && !is.null(sbti_result$path) && sbti_col %in% names(sbti_result$path)) {
+      series_list[["SBTi-calculated goal"]] <- sbti_result$path %>% transmute(year, value = .data[[sbti_col]])
+    }
+
+    # Industry Target -- the SAME SBTi engine as the line above, run on
+    # the sector benchmark's (scale-adjusted) numbers instead of the
+    # company's own. Distinct from the grey "Industry emissions" line:
+    # grey is where the industry currently IS, this yellow line is
+    # where its own SBTi trajectory says it's headed.
+    industry_result <- tryCatch(eu_cp_industry_sbti_result(), error = function(e) list(error = conditionMessage(e)))
+    if (is.null(industry_result$error) && !is.null(industry_result$path) && sbti_col %in% names(industry_result$path)) {
+      series_list[["Industry-calculated goal"]] <- industry_result$path %>% transmute(year, value = .data[[sbti_col]])
+    }
+
+      plot_df <- bind_rows(lapply(names(series_list), function(nm) series_list[[nm]] %>% mutate(series = nm))) %>%
+        mutate(series = factor(series, levels = names(series_list)))
+
+      point_df <- plot_df %>% filter(series %in% c("Industry emissions", "Emissions"))
+
+      # Shaded +/-10% uncertainty band around the forecasted segment --
+      # same treatment as the US Company Profile trend chart.
+      forecast_band_df <- plot_df %>% filter(series == "Emissions (forecast)", !is.na(value)) %>%
+        mutate(ymin = value * 0.9, ymax = value * 1.1)
+
+      series_colors <- c(
+        "Industry emissions" = "#4A6274", "Industry emissions (forecast)" = "#A9BCC9",
+        "Emissions" = "#C0392B", "Emissions (forecast)" = "#E59A8F",
+        "Your stated goal" = "#8E44AD", "SBTi-calculated goal" = "#27AE60",
+        "Industry-calculated goal" = "#F39C12"
+      )
+      # Dashed reserved for "forecast" only -- SBTi now gets "twodash"
+      # instead of "dashed", same reasoning as the US chart. "Your
+      # stated goal" (purple) and "Industry-calculated goal" (yellow)
+      # are always solid, per direct request -- they're target/reference
+      # lines, not a forecast, regardless of what years they cover.
+      series_linetypes <- c(
+        "Industry emissions" = "solid", "Industry emissions (forecast)" = "dashed",
+        "Emissions" = "solid", "Emissions (forecast)" = "dashed",
+        "Your stated goal" = "solid", "SBTi-calculated goal" = "twodash",
+        "Industry-calculated goal" = "solid"
+      )
+      series_linewidths <- c(
+        "Industry emissions" = 0.8, "Industry emissions (forecast)" = 0.8,
+        "Emissions" = 1.9, "Emissions (forecast)" = 1.9,
+        "Your stated goal" = 1.0, "SBTi-calculated goal" = 1.0,
+        "Industry-calculated goal" = 1.0
+      )
+      anchor_series <- c("Industry emissions", "Emissions", "Your stated goal",
+                          "SBTi-calculated goal", "Industry-calculated goal")
+
+      observed_last_year <- if (nrow(point_df) > 0) suppressWarnings(max(point_df$year, na.rm = TRUE)) else NA_real_
+      plot_max_year <- suppressWarnings(max(plot_df$year, na.rm = TRUE))
+      show_today_marker <- is.finite(observed_last_year) && is.finite(plot_max_year) && plot_max_year > observed_last_year
+
+      # "SO WHAT" CALLOUT -- matches the US chart: states the actual
+      # gap between where emissions are headed and the goal line,
+      # instead of leaving it to be eyeballed.
+      gap_note <- ""
+      goal_years  <- plot_df$year[plot_df$series == "Your stated goal" & !is.na(plot_df$value)]
+      emiss_years <- plot_df$year[plot_df$series %in% c("Emissions", "Emissions (forecast)") & !is.na(plot_df$value)]
+      common_year <- suppressWarnings(max(intersect(goal_years, emiss_years), na.rm = TRUE))
+      if (is.finite(common_year)) {
+        goal_val  <- plot_df$value[plot_df$series == "Your stated goal" & plot_df$year == common_year][1]
+        emiss_val <- plot_df$value[plot_df$series %in% c("Emissions", "Emissions (forecast)") & plot_df$year == common_year][1]
+        if (!is.na(goal_val) && !is.na(emiss_val)) {
+          gap <- emiss_val - goal_val
+          gap_note <- paste0(
+            " -- ", if (gap > 0) "gap to goal in " else "ahead of goal in ", common_year,
+            ": ", comma(round(abs(gap))), " t"
+          )
+        }
       }
 
-      p + scale_x_continuous(breaks = eu_x_breaks) + scale_y_continuous(labels = comma) +
-        labs(subtitle = "Solid = observed | Dashed = model forecast | Dotted = your own target (if set)",
-             x = NULL, y = "Emissions (tCO2e, approx. Scope 1)") +
-        theme_minimal(base_size = 13) + theme(plot.subtitle = element_text(color = "grey40", size = 10.5))
-    })
+      label_df <- plot_df %>% filter(!is.na(value), series %in% anchor_series) %>% group_by(series) %>% filter(year == max(year)) %>% ungroup()
+
+      # Open circle marker along "Your stated goal" (purple, solid) so
+      # it reads distinct from the plain solid Emissions line -- same
+      # treatment as the US chart.
+      circle_df <- plot_df %>% filter(series == "Your stated goal")
+
+      p <- ggplot(plot_df, aes(x = year, y = value, color = series, linetype = series, linewidth = series, group = series)) +
+        { if (show_today_marker) annotate("rect", xmin = observed_last_year, xmax = Inf, ymin = -Inf, ymax = Inf, fill = "grey50", alpha = 0.035) } +
+        { if (show_today_marker) geom_vline(xintercept = observed_last_year, color = "grey60", linewidth = 0.5, linetype = "22") } +
+        { if (show_today_marker) {
+            annotate("text", x = observed_last_year, y = Inf, label = "Today",
+                     vjust = 1.6, hjust = -0.15, size = 3.1, color = "grey45", fontface = "italic")
+          } } +
+        { if (nrow(forecast_band_df) > 0) {
+            geom_ribbon(data = forecast_band_df, aes(x = year, ymin = ymin, ymax = ymax),
+                        inherit.aes = FALSE, fill = "#C0392B", alpha = 0.15)
+          } } +
+        geom_line() +
+        geom_point(data = circle_df, shape = 21, fill = "white", stroke = 1.1, size = 2.1) +
+        geom_point(data = point_df, size = 1.8) +
+        scale_color_manual(values = series_colors, breaks = anchor_series, name = NULL) +
+        scale_linetype_manual(values = series_linetypes, breaks = anchor_series, name = NULL) +
+        scale_linewidth_manual(values = series_linewidths, breaks = anchor_series, name = NULL) +
+        scale_x_continuous(breaks = eu_x_breaks, expand = expansion(mult = c(0.02, if (has_ggrepel) 0.22 else 0.02))) +
+        scale_y_continuous(labels = comma) +
+        labs(
+          subtitle = paste0(if (show_today_marker) "Dashed = forecast" else "", gap_note),
+          x = NULL, y = paste0("Emissions (tCO2e, approx. ", scope_label, ")")
+        ) +
+        trend_chart_theme(base_size = 13, show_legend = !has_ggrepel)
+
+    if (has_ggrepel) {
+      p <- p + ggrepel::geom_text_repel(
+        data = label_df, aes(label = series), hjust = 0, direction = "y",
+        nudge_x = (plot_max_year - min(plot_df$year, na.rm = TRUE)) * 0.03 + 0.6,
+        xlim = c(plot_max_year, NA), segment.size = 0.3, segment.color = "grey70",
+        size = 3.3, fontface = "bold", show.legend = FALSE, seed = 42, box.padding = 0.25
+      )
+    }
+
+    p
+  }
+
+  output$eu_cp_trend_plot <- renderPlot({
+     build_eu_cp_trend_plot(scope_mult = 1, sbti_col = "scope1_emissions", scope_label = "Scope 1") 
+  })
+
+  output$eu_cp_trend_plot_s2 <- renderPlot({
+    
+      ratio <- get_scope23_ratio_eu(input$eu_cp_sector)
+      req(!is.null(ratio))
+      build_eu_cp_trend_plot(scope_mult = ratio$scope2_multiplier, sbti_col = "scope2_emissions",
+                              scope_label = "Scope 2", real_data_reactive = eu_cp_user_data_s2)
+    
+  })
+
+  output$eu_cp_trend_plot_s3 <- renderPlot({
+    
+      ratio <- get_scope23_ratio_eu(input$eu_cp_sector)
+      req(!is.null(ratio))
+      build_eu_cp_trend_plot(scope_mult = ratio$scope3_multiplier, sbti_col = "scope3_emissions",
+                              scope_label = "Scope 3", real_data_reactive = eu_cp_user_data_s3)
+    
+  })
+
+  output$eu_cp_scope2_header <- renderUI({
+    ratio <- get_scope23_ratio_eu(input$eu_cp_sector)
+    if (is.null(ratio)) {
+      return(tags$p(em(
+        "No Scope 2/3 ratio estimate for this sector category -- ",
+        "categories 7-9 (livestock/aquaculture, food & beverage, other) ",
+        "aren't covered by the Hertwich & Wood (2018) ratios this app uses. ",
+        "Paste real Scope 2 data on the left to see it here anyway."
+      )))
+      }
+    real <- tryCatch(eu_cp_user_data_s2(), error = function(e) NULL)
+    h5(if (!is.null(real) && nrow(real) > 0) "Scope 2 (your real data)" else "Scope 2 (v1 estimate)")
+  })
+
+  output$eu_cp_scope3_header <- renderUI({
+    ratio <- get_scope23_ratio_eu(input$eu_cp_sector)
+    if (is.null(ratio)) {
+      return(tags$p(em(
+        "No Scope 2/3 ratio estimate for this sector category -- ",
+        "categories 7-9 (livestock/aquaculture, food & beverage, other) ",
+        "aren't covered by the Hertwich & Wood (2018) ratios this app uses. ",
+        "Paste real Scope 3 data on the left to see it here anyway."
+      )))
+    }
+    real <- tryCatch(eu_cp_user_data_s3(), error = function(e) NULL)
+    h5(if (!is.null(real) && nrow(real) > 0) "Scope 3 (your real data)" else "Scope 3 (v1 estimate)")
   })
 
   output$eu_cp_table <- renderDT({
-    eu_cp_calc_trigger()
-    isolate({
+    
       hist_tbl <- eu_cp_user_data() %>% transmute(year, value = round(emissions), series = "Observed")
       req(nrow(hist_tbl) > 0)
       fore_df <- tryCatch(eu_cp_forecast(), error = function(e) tibble())
@@ -5590,31 +7751,32 @@ server <- function(input, output, session) {
         pivot_wider(names_from = series, values_from = value) %>%
         arrange(year) %>%
         datatable(options = list(pageLength = 15, dom = "tp"), rownames = FALSE)
-    })
+    
   })
 
   output$eu_cp_facilities_content <- renderUI({
-    eu_cp_calc_trigger()
-    isolate({
+    
       m <- tryCatch(eu_cp_match(), error = function(e) NULL)
       if (is.null(m)) {
         return(tags$p(em("Facility-level detail is only available for companies matched to real EPRTR facilities.")))
       }
       fac <- eu_cp_matched_facilities()
       tagList(
-        h5(paste0(m$company[1], " -- company rollup (", nrow(fac), if (nrow(fac) == 1) " facility)" else " facilities)")),
-        plotOutput("eu_cp_rollup_plot", height = "360px"),
-        hr(),
         h5("Individual facility detail"),
         selectInput("eu_cp_facility_drill", NULL, choices = setNames(fac$facility_id, fac$facility_name)),
         plotOutput("eu_cp_drill_plot", height = "360px")
       )
-    })
+      # NOTE: the company-rollup summary (heading + plotOutput
+      # "eu_cp_rollup_plot") that used to sit above this drill-down
+      # was removed to match the US Facilities tab, which now shows
+      # only individual-facility detail. output$eu_cp_rollup_plot
+      # itself is left defined below (unused) to keep the diff
+      # minimal.
+    
   })
 
   output$eu_cp_rollup_plot <- renderPlot({
-    eu_cp_calc_trigger()
-    isolate({
+    
       m <- tryCatch(eu_cp_match(), error = function(e) NULL)
       req(!is.null(m))
       hist_df <- eu_cp_user_data()
@@ -5629,12 +7791,11 @@ server <- function(input, output, session) {
       p + scale_x_continuous(breaks = eu_x_breaks) + scale_y_continuous(labels = comma) +
         labs(subtitle = "Company rollup | Solid = observed | Dashed = forecast", x = NULL, y = "Emissions (tCO2e)") +
         theme_minimal(base_size = 13) + theme(plot.subtitle = element_text(color = "grey40", size = 10.5))
-    })
+    
   })
 
   output$eu_cp_drill_plot <- renderPlot({
-    eu_cp_calc_trigger()
-    isolate({
+    
       req(input$eu_cp_facility_drill)
       fid <- input$eu_cp_facility_drill
       fname <- facility_lookup_eu$facility_name[facility_lookup_eu$facility_id == fid][1]
@@ -5650,7 +7811,7 @@ server <- function(input, output, session) {
       p + scale_x_continuous(breaks = eu_x_breaks) + scale_y_continuous(labels = comma) +
         labs(title = fname, subtitle = "Solid = observed | Dashed = forecast", x = NULL, y = "Emissions (tCO2e)") +
         theme_minimal(base_size = 13) + theme(plot.subtitle = element_text(color = "grey40", size = 10.5))
-    })
+    
   })
 
   # ---------------- EU PORTFOLIO MIX ----------------
@@ -5669,76 +7830,312 @@ server <- function(input, output, session) {
     )
   })
 
-  output$eu_pm_company_readout <- renderUI({
+  # Sidebar header -- matches the US tab's pme_context structure/wording
+  # exactly ("Sizing portfolio for: X" / "Sector: Y"), per direct
+  # request to keep the same sidebar structure across regions.
+  output$eu_pm_sidebar_header <- renderUI({
     req(has_eu_data)
-    m <- tryCatch(eu_cp_match(), error = function(e) NULL)
-    company_name <- if (is.null(input$eu_cp_company_name)) "" else input$eu_cp_company_name
-    tags$div(
-      style = "font-size:12.5px; color:#7F8C8D; margin-bottom:6px;",
-      tags$b("Active company: "),
-      tags$span(style = "color:#2C3E50; font-weight:600;",
-                if (nzchar(company_name)) company_name else "not set"),
+    company_name <- if (is.null(input$eu_cp_company_name) || !nzchar(input$eu_cp_company_name)) "(unnamed company)" else input$eu_cp_company_name
+    sector_label <- if (is.null(input$eu_cp_sector) || !nzchar(input$eu_cp_sector)) "not set" else eu_sector_code_label(input$eu_cp_sector)
+    tagList(
+      tags$b("Sizing portfolio for: "), tags$span(company_name),
       tags$br(),
-      tags$em("Set on the \"EU Company Profile\" tab.")
+      tags$b("Sector: "), tags$span(sector_label)
     )
   })
 
-  # Auto-populate the gap from the active company's forecast, same
-  # spirit as the US tab's own gap auto-sizing -- override freely.
-  observe({
-    req(has_eu_data, input$eu_pm_gap_year)
-    fore_df <- tryCatch(eu_cp_forecast(), error = function(e) tibble())
-    if (nrow(fore_df) > 0) {
-      match_row <- fore_df %>% filter(year == as.integer(input$eu_pm_gap_year))
-      if (nrow(match_row) > 0) {
-        updateNumericInput(session, "eu_pm_gap_tons", value = round(match_row$p50[1]))
-      }
-    }
+  # Same normalization as the US tab's pme_weights() -- relative, not
+  # required to sum to 100; falls back to an even split if every slider
+  # is 0/blank.
+  eu_pm_weights <- reactive({
+    w <- c(
+      nat_avoid    = input$eu_pm_wt_nat_avoid,
+      nat_removal  = input$eu_pm_wt_nat_removal,
+      tech_avoid   = input$eu_pm_wt_tech_avoid,
+      tech_removal = input$eu_pm_wt_tech_removal,
+      comm_avoid   = input$eu_pm_wt_comm_avoid
+    )
+    w[is.na(w)] <- 0
+    if (sum(w) == 0) w[] <- 20
+    w / sum(w)
   })
 
-  eu_run_lp_alloc <- function(gap_tons, budget) {
-    req(!is.na(budget), budget >= 0, !is.na(gap_tons), gap_tons >= 0)
-    catalog <- catalog_rv() %>% mutate(margin_per_ton = buyer_price - dev_cost)
+  # Gap = forecast minus target for the selected year/scenario -- same
+  # idea as US's pme_gap_source, adapted for EU's Scope-1-only,
+  # single-scope data. "own" reads the same exponential target-path
+  # formula the trend chart itself draws; "sbti" reads from
+  # eu_cp_sbti_result()'s own path. Wrapped defensively throughout
+  # (tryCatch / req) since this reactive can be reached with a brand
+  # new, unmatched company that has no forecast, no SBTi path, or both.
+  # Shared gap-for-one-year computation -- extracted so the single-year
+  # auto-populate observer and the new 5-year/demand-trends reactives
+  # below all read from ONE implementation, not three separately
+  # written copies. This is a direct lesson from the earlier bug: two
+  # independent implementations of "the same" formula drifted apart
+  # when one was gated to the calculated state and the other wasn't.
+  # Returns list(forecast, target, gap) or NULL if any input is missing.
+  # Caller is responsible for isolate()/calc_trigger gating.
+  eu_pm_compute_gap_for_year <- function(gap_year, scenario) {
+    hist_df <- tryCatch(eu_cp_user_data(), error = function(e) tibble())
+    if (nrow(hist_df) == 0) return(NULL)
+    fore_df <- tryCatch(eu_cp_forecast(), error = function(e) tibble())
+    if (nrow(fore_df) == 0) return(NULL)
+    fc_row <- fore_df %>% filter(year == gap_year)
+    if (nrow(fc_row) == 0) return(NULL)
+    forecast_val <- fc_row$p50[1]
 
-    facility_country <- if (is.null(input$eu_cp_country)) "" else input$eu_cp_country
-    has_facility <- nzchar(facility_country)
-    beta <- if (has_facility) input$eu_pm_proximity_weight / 100 else 0
-    uniform_weight <- 1 - beta   # no bucket-preference dimension for EU -- see block comment above
+    base_year <- max(hist_df$year); base_val <- hist_df$emissions[hist_df$year == base_year][1]
+    target_year <- input$eu_cp_target_year
+    if (is.null(target_year) || !isTRUE(target_year > base_year) || is.na(base_val)) return(NULL)
 
-    proximity_score <- compute_proximity_score(catalog, facility_country, NA_character_, NA_character_)
-    catalog$proximity_score <- proximity_score
-    catalog$proximity_tier <- if (!has_facility) {
-      "Not evaluated (no company set)"
+    target_val <- if (identical(scenario, "own")) {
+      reduction <- input$eu_cp_target_reduction
+      if (is.null(reduction)) return(NULL)
+      base_val * (1 - reduction / 100) ^ ((gap_year - base_year) / (target_year - base_year))
     } else {
-      case_when(
-        proximity_score == 0.6  ~ "Same country",
-        proximity_score == 0.35 ~ "Same region",
-        TRUE                    ~ "Elsewhere globally"
+      sbti_result <- tryCatch(eu_cp_sbti_result(), error = function(e) list(error = conditionMessage(e)))
+      if (!is.null(sbti_result$error) || is.null(sbti_result$path)) return(NULL)
+      sbti_row <- sbti_result$path %>% filter(year == gap_year)
+      if (nrow(sbti_row) == 0) return(NULL)
+      sbti_row$scope1_emissions[1]
+    }
+
+    if (is.na(forecast_val) || is.na(target_val)) return(NULL)
+    list(forecast = forecast_val, target = target_val, gap = max(round(forecast_val - target_val), 0))
+  }
+
+  observe({
+    req(has_eu_data, input$eu_pm_gap_year, input$eu_pm_gap_source)
+    
+      r <- eu_pm_compute_gap_for_year(as.integer(input$eu_pm_gap_year), input$eu_pm_gap_source)
+      req(!is.null(r))
+      updateNumericInput(session, "eu_pm_gap_tons", value = r$gap)
+    
+  })
+
+  # ---- Long Term: 5-Year Optimal Portfolio (EU) -- same idea as US's
+  # pme_5yr_scope_gaps()/pme_5yr_alloc(): sum the gap across 5
+  # consecutive years (starting at the selected Gap year), then run the
+  # SAME LP allocator against that combined total with 5x budget and an
+  # optional forward-pricing discount. Scope 1 only, same limitation as
+  # everywhere else in EU's build.
+  eu_pm_5yr_year_gaps <- reactive({
+    req(has_eu_data, input$eu_pm_gap_year, input$eu_pm_gap_source)
+    
+      start_year <- as.integer(input$eu_pm_gap_year)
+      window_years <- start_year:(start_year + 4)
+      scenario <- input$eu_pm_gap_source
+      rows <- lapply(window_years, function(yr) {
+        r <- eu_pm_compute_gap_for_year(yr, scenario)
+        if (is.null(r)) return(NULL)
+        data.frame(year = yr, gap_tons = r$gap, forecast = r$forecast)
+      })
+      out <- bind_rows(rows)
+      req(nrow(out) > 0)
+      out
+    
+  })
+
+  eu_pm_5yr_total_gap <- reactive({ sum(eu_pm_5yr_year_gaps()$gap_tons, na.rm = TRUE) })
+
+  eu_pm_5yr_alloc <- reactive({
+    eu_run_lp_alloc(eu_pm_5yr_total_gap(), input$eu_pm_budget * 5, price_discount = input$eu_pm_forward_discount / 100)
+  })
+
+  # ---- Internal: Demand Trends (EU) -- reuses build_demand_rollup(),
+  # the SAME shared function US's version uses (it's generic: any
+  # alloc with key/ideal_tons columns works). Same honest 10-year
+  # limitation as US: EU's own forecast horizon is genuinely short, so
+  # years beyond it are a linear extrapolation of the real gap trend,
+  # not real model output -- labeled as such below, not hidden.
+  eu_pm_extrapolated_total_gap <- function(n_years) {
+    base <- eu_pm_5yr_year_gaps() %>% arrange(year)
+    real_years <- base$year
+    req(length(real_years) >= 1)
+    start_year <- min(real_years)
+    target_years <- start_year:(start_year + n_years - 1)
+
+    if (length(real_years) < 2) {
+      flat_val <- base$gap_tons[1]
+      return(list(total = flat_val * length(target_years), extrapolated = length(target_years) > 1))
+    }
+
+    fit <- lm(gap_tons ~ year, data = base)
+    vals <- sapply(target_years, function(y) {
+      if (y %in% real_years) base$gap_tons[base$year == y] else max(predict(fit, newdata = data.frame(year = y)), 0)
+    })
+    list(total = sum(vals), extrapolated = any(!target_years %in% real_years))
+  }
+
+  eu_pm_internal_alloc <- function(n_years) {
+    gap_info <- eu_pm_extrapolated_total_gap(n_years)
+    alloc <- eu_run_lp_alloc(gap_info$total, budget = 1e12)
+    attr(alloc, "extrapolated") <- gap_info$extrapolated
+    alloc
+  }
+
+  eu_pm_demand_5yr  <- reactive({ eu_pm_internal_alloc(5) })
+  eu_pm_demand_10yr <- reactive({ eu_pm_internal_alloc(10) })
+
+  eu_pm_demand_comparison <- reactive({
+    d5  <- build_demand_rollup(eu_pm_demand_5yr())  %>% rename(ideal_tons_5 = ideal_tons, share_5 = share_pct)
+    d10 <- build_demand_rollup(eu_pm_demand_10yr()) %>% rename(ideal_tons_10 = ideal_tons, share_10 = share_pct)
+    d5 %>%
+      left_join(d10 %>% select(key, ideal_tons_10, share_10), by = "key") %>%
+      mutate(share_delta = round(share_10 - share_5, 1)) %>%
+      arrange(desc(share_10))
+  })
+
+  output$eu_pm_demand_note <- renderUI({
+    extrapolated_5  <- isTRUE(attr(eu_pm_demand_5yr(), "extrapolated"))
+    extrapolated_10 <- isTRUE(attr(eu_pm_demand_10yr(), "extrapolated"))
+    tagList(
+      tags$div(
+        style = "background:#FEF9E7; border:1px solid #F7DC6F; border-radius:6px; padding:0.6rem 0.9rem; margin-bottom:10px; font-size:12.5px;",
+        tags$b("Internal use -- not client-facing. "),
+        "Shows IDEAL demand (unconstrained by any budget) by category, at 5 and 10 years, for this company's own Scope 1 gap trajectory only. ",
+        if (extrapolated_5) "The 5-year figure uses real forecast data throughout. " else "",
+        if (extrapolated_10) tags$b("The 10-year figure is a LINEAR EXTRAPOLATION beyond EU's real forecast horizon -- not real model output.") else ""
       )
+    )
+  })
+
+  output$eu_pm_demand_plot <- renderPlot({
+    df <- eu_pm_demand_comparison() %>%
+      select(category, share_5, share_10) %>%
+      pivot_longer(cols = c(share_5, share_10), names_to = "horizon", values_to = "share") %>%
+      mutate(horizon = ifelse(horizon == "share_5", "5-year", "10-year"),
+             horizon = factor(horizon, levels = c("5-year", "10-year")),
+             category = factor(category, levels = rev(eu_pm_demand_comparison()$category)))
+
+    ggplot(df, aes(x = category, y = share, fill = horizon)) +
+      geom_col(position = position_dodge(width = 0.7), width = 0.6) +
+      coord_flip() +
+      scale_fill_manual(values = c("5-year" = "#5DADE2", "10-year" = "#1B4F72"), name = NULL) +
+      scale_y_continuous(labels = function(x) paste0(x, "%"), expand = expansion(mult = c(0, 0.1))) +
+      labs(subtitle = "Ideal demand share by category -- 5yr vs 10yr horizon", x = NULL, y = "Share of ideal demand (%)") +
+      theme_minimal(base_size = 13) +
+      theme(plot.subtitle = element_text(color = "grey40", size = 11), legend.position = "top")
+  })
+
+  output$eu_pm_demand_table <- renderDT({
+    df <- eu_pm_demand_comparison() %>%
+      mutate(trend = ifelse(share_delta > 0.5, "\u2191 Growing", ifelse(share_delta < -0.5, "\u2193 Phasing out", "\u2192 Stable"))) %>%
+      select(category, ideal_tons_5, share_5, ideal_tons_10, share_10, share_delta, trend)
+    datatable(
+      df, rownames = FALSE,
+      options = list(pageLength = 10, dom = "t"),
+      colnames = c("Category", "5yr Ideal Tons", "5yr Share (%)", "10yr Ideal Tons", "10yr Share (%)", "Share Change (pp)", "Trend")
+    )
+  })
+
+  output$eu_pm_forward_discount_readout <- renderUI({
+    discount <- input$eu_pm_forward_discount
+    tags$p(style = "font-size:12px; color:#7F8C8D;",
+            if (discount > 0) paste0("Applying a ", discount, "% forward-pricing discount to all catalog prices for this 5-year estimate.")
+            else "No forward-pricing discount applied.")
+  })
+
+  output$eu_pm_5yr_summary <- renderUI({
+    alloc <- eu_pm_5yr_alloc()
+    gap <- attr(alloc, "gap_tons"); budget <- attr(alloc, "budget")
+    funded_tons <- sum(alloc$funded_tons); funded_cost <- sum(alloc$funded_cost)
+    pct_covered <- if (gap > 0) round(funded_tons / gap * 100, 1) else 0
+    card <- function(value, label, color = "#1B2631") {
+      tags$div(style = "background:#F4F6F7; border-radius:6px; padding:0.8rem; text-align:center;",
+                tags$div(style = paste0("font-size:20px; font-weight:700; color:", color, ";"), value),
+                tags$div(style = "font-size:11.5px; color:#7F8C8D;", label))
     }
+    tags$div(
+      style = "display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; margin:12px 0;",
+      card(paste0(comma(round(gap)), " t"), "5-year combined gap"),
+      card(paste0("$", comma(budget)), "5-year budget (5x annual)"),
+      card(paste0(comma(funded_tons), " t"), paste0(pct_covered, "% of gap covered"), color = "#C0392B"),
+      card(paste0("$", comma(funded_cost)), "Estimated spend")
+    )
+  })
 
-    obj_weights <- uniform_weight * rep(1, nrow(catalog)) + beta * proximity_score
+  output$eu_pm_5yr_category_plot <- renderPlot({ region_pm_category_plot(eu_pm_5yr_alloc()) })
+  output$eu_pm_5yr_spend_pie     <- renderPlot({ region_pm_spend_pie(eu_pm_5yr_alloc()) })
 
-    bucket_cap <- input$eu_pm_bucket_cap / 100
-    tier_min_frac <- switch(input$eu_pm_claim_tier, "silver" = 0.10, "gold" = 0.50, "platinum" = 1.00, 0)
+  eu_run_lp_alloc <- function(gap_tons, budget, price_discount = 0) {
+    req(!is.na(budget), budget >= 0, !is.na(gap_tons), gap_tons >= 0)
+    step <- "loading catalog"
+    tryCatch({
+      catalog <- catalog_rv()
+      if (price_discount > 0) {
+        catalog <- catalog %>% mutate(buyer_price = round(buyer_price * (1 - price_discount), 2))
+      }
+      catalog <- catalog %>% mutate(margin_per_ton = buyer_price - dev_cost)
+      catalog <- apply_geo_preference(catalog, input$eu_pce_geo_mode, input$eu_pce_geo_selection)
+      req(nrow(catalog) > 0)
 
-    ideal_sol <- solve_portfolio_lp(catalog, gap_tons, obj_weights, budget = NULL, tier_min_frac = 0, bucket_cap = bucket_cap)
-    catalog$ideal_tons <- floor(ideal_sol$tons)
+      step <- "reading facility country"
+      facility_country <- if (is.null(input$eu_cp_country)) "" else input$eu_cp_country
+      has_facility <- nzchar(facility_country)
 
-    funded_sol <- solve_portfolio_lp(catalog, gap_tons, obj_weights, budget = budget, tier_min_frac = tier_min_frac, bucket_cap = bucket_cap)
-    tier_shortfall <- tier_min_frac > 0 && funded_sol$status != 0
-    if (tier_shortfall) {
-      funded_sol <- solve_portfolio_lp(catalog, gap_tons, obj_weights, budget = budget, tier_min_frac = 0, bucket_cap = bucket_cap)
-    }
-    catalog$funded_tons <- floor(funded_sol$tons)
-    catalog$funded_cost <- round(catalog$funded_tons * catalog$buyer_price)
-    catalog$ideal_cost  <- round(catalog$ideal_tons * catalog$buyer_price)
+      # Bucket-preference dimension -- now wired in (per direct request,
+      # same approach/math as the US tab's run_lp_alloc()): alpha is the
+      # hidden "Respect stated mix vs. minimize gap" weight, applied to
+      # the normalized Relative-preference-weight sliders via catalog$key
+      # (the SAME shared catalog_rv() the US allocator reads, so "key"
+      # means the same methodology bucket in both).
+      step <- "reading preference weights"
+      w <- eu_pm_weights()
+      alpha <- input$eu_pce_preference_strength / 100
+      beta  <- if (has_facility) input$eu_pm_proximity_weight / 100 else 0
+      if (alpha + beta > 1) {  # normalize so the two soft preferences never crowd out ALL cost-effectiveness weight
+        scale_down <- 1 / (alpha + beta)
+        alpha <- alpha * scale_down
+        beta  <- beta * scale_down
+      }
+      uniform_weight <- 1 - alpha - beta
+      preference_weights <- as.numeric(w[catalog$key])
+      preference_weights[is.na(preference_weights)] <- 0
 
-    attr(catalog, "tier_shortfall")   <- tier_shortfall
-    attr(catalog, "gap_tons")         <- gap_tons
-    attr(catalog, "budget")           <- budget
-    attr(catalog, "facility_country") <- facility_country
-    catalog
+      step <- "computing proximity scores"
+      proximity_score <- compute_proximity_score(catalog, facility_country, NA_character_, NA_character_)
+      catalog$proximity_score <- proximity_score
+      catalog$proximity_tier <- if (!has_facility) {
+        "Not evaluated (no company set)"
+      } else {
+        case_when(
+          proximity_score == 0.6  ~ "Same country",
+          proximity_score == 0.35 ~ "Same region",
+          TRUE                    ~ "Elsewhere globally"
+        )
+      }
+
+      step <- "computing objective weights"
+      obj_weights <- uniform_weight * rep(1, nrow(catalog)) + alpha * preference_weights + beta * proximity_score
+
+      step <- "reading sidebar controls (bucket cap / claim tier)"
+      bucket_cap <- input$eu_pm_bucket_cap / 100
+      tier_min_frac <- switch(input$eu_pm_claim_tier, "silver" = 0.10, "gold" = 0.50, "platinum" = 1.00, 0)
+
+      step <- "solving ideal allocation (no budget)"
+      ideal_sol <- solve_portfolio_lp(catalog, gap_tons, obj_weights, budget = NULL, tier_min_frac = 0, bucket_cap = bucket_cap)
+      catalog$ideal_tons <- floor(ideal_sol$tons)
+
+      step <- "solving funded allocation (with budget)"
+      funded_sol <- solve_portfolio_lp(catalog, gap_tons, obj_weights, budget = budget, tier_min_frac = tier_min_frac, bucket_cap = bucket_cap)
+      tier_shortfall <- tier_min_frac > 0 && funded_sol$status != 0
+      if (tier_shortfall) {
+        step <- "re-solving funded allocation without tier floor"
+        funded_sol <- solve_portfolio_lp(catalog, gap_tons, obj_weights, budget = budget, tier_min_frac = 0, bucket_cap = bucket_cap)
+      }
+      catalog$funded_tons <- floor(funded_sol$tons)
+      catalog$funded_cost <- round(catalog$funded_tons * catalog$buyer_price)
+      catalog$ideal_cost  <- round(catalog$ideal_tons * catalog$buyer_price)
+
+      attr(catalog, "tier_shortfall")   <- tier_shortfall
+      attr(catalog, "gap_tons")         <- gap_tons
+      attr(catalog, "budget")           <- budget
+      attr(catalog, "facility_country") <- facility_country
+      catalog
+    }, error = function(e) {
+      stop(paste0("EU Portfolio Mix failed at step [", step, "]: ", conditionMessage(e)))
+    })
   }
 
   eu_pm_alloc <- reactive({
@@ -5943,9 +8340,11 @@ server <- function(input, output, session) {
   # tabs' gap sizing comes from synthetic_country_year -- clearly
   # labeled as such in every context (data badge, chart subtitle).
 
-  region_run_lp_alloc <- function(gap_tons, budget, facility_country, proximity_weight_pct, bucket_cap_pct) {
+  region_run_lp_alloc <- function(gap_tons, budget, facility_country, proximity_weight_pct, bucket_cap_pct,
+                                   geo_mode = "none", geo_selection = character(0)) {
     req(!is.na(budget), budget >= 0, !is.na(gap_tons), gap_tons >= 0)
     catalog <- catalog_rv() %>% mutate(margin_per_ton = buyer_price - dev_cost)
+    catalog <- apply_geo_preference(catalog, geo_mode, geo_selection)
 
     has_facility <- nzchar(facility_country)
     beta <- if (has_facility) proximity_weight_pct / 100 else 0
@@ -5983,11 +8382,35 @@ server <- function(input, output, session) {
   # Shared renderers, parameterized by country/region/input-prefix, so
   # the three tabs' server wiring below is a short, uniform call each
   # rather than five near-identical render blocks apiece.
-  region_pm_data_badge <- function(country) {
-    tags$div(
-      style = "background:#FEF9E7; border:1px solid #F7DC6F; border-radius:6px; padding:0.5rem 0.8rem; margin-bottom:10px; font-size:12px;",
-      tags$b("Synthetic data: "), country, "'s emissions are illustrative (no real facility-level source available yet), scaled to a realistic order of magnitude -- not sourced or reported figures."
-    )
+  # `real_countries` is the vector of countries in this region that DO
+  # have a real facility/company-level source behind them (e.g.
+  # country_list_asia_real == c("India","Singapore") -- Japan, in the
+  # same dropdown, does not). This Country View gap-sizing step always
+  # starts from `synthetic_country_year` (a scaled illustrative
+  # aggregate, used only to suggest a starting gap), so the badge
+  # still needs to say that plainly -- but it must not claim "no real
+  # source available" for a country whose Company Profile tab above
+  # actually has one.
+  region_pm_data_badge <- function(country, real_countries = character(0)) {
+    # This box renders inside a sidebarPanel() (a Bootstrap .well), and
+    # .well sets color:#FFFFFF on the WHOLE panel (plus a redundant
+    # white override specifically on b/strong/label/em) -- so any text
+    # here with no color of its own inherits white, which is nearly
+    # invisible against this box's own pale-yellow (#FEF9E7) background.
+    # Both the label color and the body text color are pinned explicitly
+    # below for exactly that reason (the same bug class as the industry-
+    # standard-target box fixed earlier this session).
+    if (country %in% real_countries) {
+      tags$div(
+        style = "background:#FEF9E7; border:1px solid #F7DC6F; border-radius:6px; padding:0.5rem 0.8rem; margin-bottom:10px; font-size:12px; color:#7D6608;",
+        tags$b(style = "color:#7D6608;", "Country-level starting estimate: "), "this Country View sizes a starting gap from a scaled, illustrative aggregate for ", country, " -- it is not an official reported total. Real, sourced facility/company-level emissions data IS available for ", country, "; use the Company Profile tab above to work from an actual company's reported figures instead of this aggregate."
+      )
+    } else {
+      tags$div(
+        style = "background:#FEF9E7; border:1px solid #F7DC6F; border-radius:6px; padding:0.5rem 0.8rem; margin-bottom:10px; font-size:12px; color:#7D6608;",
+        tags$b(style = "color:#7D6608;", "Synthetic data: "), country, "'s emissions are illustrative (no real facility-level source available yet), scaled to a realistic order of magnitude -- not sourced or reported figures."
+      )
+    }
   }
 
   region_pm_context_ui <- function(alloc) {
@@ -6163,7 +8586,7 @@ server <- function(input, output, session) {
 
   # ---- LATAM ----
   observeEvent(input$latam_pm_country, { region_pm_auto_gap(input$latam_pm_country, session, "latam_pm_gap_mt") }, ignoreNULL = TRUE)
-  output$latam_pm_data_badge <- renderUI({ region_pm_data_badge(input$latam_pm_country) })
+  output$latam_pm_data_badge <- renderUI({ region_pm_data_badge(input$latam_pm_country, if (has_chile_data) "Chile" else character(0)) })
 
   # ---- Company Profile -> Portfolio Mix gap connection (real Chile
   # data only) ----
@@ -6260,7 +8683,8 @@ server <- function(input, output, session) {
 
   latam_pm_alloc <- reactive({
     region_run_lp_alloc(input$latam_pm_gap_mt * 1e6, input$latam_pm_budget, input$latam_pm_country,
-                         input$latam_pm_proximity_weight, input$latam_pm_bucket_cap)
+                         input$latam_pm_proximity_weight, input$latam_pm_bucket_cap,
+                         input$latam_pm_geo_mode, input$latam_pm_geo_selection)
   })
   output$latam_pm_context    <- renderUI({ region_pm_context_ui(latam_pm_alloc()) })
   output$latam_pm_stat_cards <- renderUI({ region_pm_stat_cards(latam_pm_alloc()) })
@@ -6278,7 +8702,7 @@ server <- function(input, output, session) {
 
   # ---- ASIA ----
   observeEvent(input$asia_pm_country, { region_pm_auto_gap(input$asia_pm_country, session, "asia_pm_gap_mt") }, ignoreNULL = TRUE)
-  output$asia_pm_data_badge <- renderUI({ region_pm_data_badge(input$asia_pm_country) })
+  output$asia_pm_data_badge <- renderUI({ region_pm_data_badge(input$asia_pm_country, if (has_asia_data) country_list_asia_real else character(0)) })
 
   # ---- Company Profile -> Portfolio Mix gap connection (real data
   # only) ----
@@ -6754,7 +9178,8 @@ server <- function(input, output, session) {
 
   asia_pm_alloc <- reactive({
     region_run_lp_alloc(input$asia_pm_gap_mt * 1e6, input$asia_pm_budget, input$asia_pm_country,
-                         input$asia_pm_proximity_weight, input$asia_pm_bucket_cap)
+                         input$asia_pm_proximity_weight, input$asia_pm_bucket_cap,
+                         input$asia_pm_geo_mode, input$asia_pm_geo_selection)
   })
   output$asia_pm_context    <- renderUI({ region_pm_context_ui(asia_pm_alloc()) })
   output$asia_pm_stat_cards <- renderUI({ region_pm_stat_cards(asia_pm_alloc()) })
@@ -6772,14 +9197,16 @@ server <- function(input, output, session) {
 
   # ---- AUSTRALIA ---- (single country, no selector -- constant "Australia")
   observe({ region_pm_auto_gap("Australia", session, "au_pm_gap_mt") })
-  output$au_pm_data_badge <- renderUI({ region_pm_data_badge("Australia") })
+  output$au_pm_data_badge <- renderUI({ region_pm_data_badge("Australia", if (has_australia_data) "Australia" else character(0)) })
 
   # ---- Company Profile -> Portfolio Mix gap connection (real data
   # only) ----
-  # Same idea as Africa/Asia's version, with the "industry" scenario
-  # genuinely absent -- no sector data exists in this source to
-  # benchmark against, so that option isn't offered here at all
-  # (matching the UI, which never presents it as a choice).
+  # Same idea as Asia's version: a real Scope 1 forecast
+  # (future_pred_australia) plus a GICS-sector-median "Industry Target"
+  # scenario (Scope 1 only, same convention as every other region).
+  # Scope 2 forecast stays flat (last observed) -- no per-company model
+  # for that scope. No Scope 3 -- NGER doesn't report it for any real
+  # company in this source.
   if (has_australia_data) {
 
     au_pm_gap_company_meta <- reactive({
@@ -6812,7 +9239,16 @@ server <- function(input, output, session) {
       for (sn in 1:2) {  # only Scope 1/2 for real Australian companies -- no Scope 3 in this source
         base_val <- switch(as.character(sn), "1" = base_s1, "2" = s2_val)
         if (is.na(base_val)) next
-        forecast_val <- base_val  # flat -- no forecast model exists for this single-year source
+
+        # Forecast at target_year: Scope 1 uses the real fitted model
+        # (future_pred_australia); Scope 2 uses the last observed value
+        # held flat -- same limitation as Company Profile's own charts.
+        if (sn == 1) {
+          fc <- future_pred_australia %>% filter(company_id == m$company_id[1], year == target_year)
+          forecast_val <- if (nrow(fc) > 0) fc$p50[1] else mry_s1
+        } else {
+          forecast_val <- base_val
+        }
 
         target_val <- switch(
           scenario,
@@ -6832,6 +9268,27 @@ server <- function(input, output, session) {
             col <- paste0("scope", sn, "_emissions")
             if (is.null(res) || is.null(res$path) || !(col %in% names(res$path))) NA_real_
             else { row <- res$path %>% filter(year == target_year); if (nrow(row) == 0) NA_real_ else row[[col]][1] }
+          },
+          "industry" = {
+            # Scope 1 only -- same convention as Asia's own industry
+            # scenario (asia_pm_gap_tons), even though a Scope 2 sector
+            # median also exists here: sbti_calculate's ACA pathway is
+            # only exercised single-scope-anchored elsewhere in this
+            # app, so this doesn't invent an untested combination.
+            bm <- tryCatch(australia_rcp_sector_benchmark_hist(1, m$sector[1]), error = function(e) tibble())
+            if (nrow(bm) == 0) { NA_real_ } else {
+              ibase_year <- min(bm$year); ibase_val <- bm$value[bm$year == ibase_year][1]
+              imry_year <- max(bm$year); imry_val <- bm$value[bm$year == imry_year][1]
+              res <- tryCatch(
+                sbti_calculate(
+                  target_setting_method = "Absolute Contraction Approach",
+                  base_year = ibase_year, base_year_s1_e = ibase_val,
+                  target_year = target_year, most_recent_year = imry_year, mry_s1_e = imry_val,
+                  net_zero_year = 2050, s3_method = "Cross-sector ACA", s3_ambition = "1.5C"
+                ), error = function(e) NULL)
+              if (sn != 1 || is.null(res) || is.null(res$path)) NA_real_
+              else { row <- res$path %>% filter(year == target_year); if (nrow(row) == 0) NA_real_ else row[["scope1_emissions"]][1] }
+            }
           },
           NA_real_
         )
@@ -6861,7 +9318,8 @@ server <- function(input, output, session) {
 
   au_pm_alloc <- reactive({
     region_run_lp_alloc(input$au_pm_gap_mt * 1e6, input$au_pm_budget, "Australia",
-                         input$au_pm_proximity_weight, input$au_pm_bucket_cap)
+                         input$au_pm_proximity_weight, input$au_pm_bucket_cap,
+                         input$au_pm_geo_mode, input$au_pm_geo_selection)
   })
   output$au_pm_context    <- renderUI({ region_pm_context_ui(au_pm_alloc()) })
   output$au_pm_stat_cards <- renderUI({ region_pm_stat_cards(au_pm_alloc()) })
@@ -6879,7 +9337,7 @@ server <- function(input, output, session) {
 
   # ---- AFRICA ----
   observeEvent(input$africa_pm_country, { region_pm_auto_gap(input$africa_pm_country, session, "africa_pm_gap_mt") }, ignoreNULL = TRUE)
-  output$africa_pm_data_badge <- renderUI({ region_pm_data_badge(input$africa_pm_country) })
+  output$africa_pm_data_badge <- renderUI({ region_pm_data_badge(input$africa_pm_country, if (has_africa_data) "South Africa" else character(0)) })
 
   # ---- Company Profile -> Portfolio Mix gap connection (real data
   # only) ----
@@ -6987,7 +9445,8 @@ server <- function(input, output, session) {
 
   africa_pm_alloc <- reactive({
     region_run_lp_alloc(input$africa_pm_gap_mt * 1e6, input$africa_pm_budget, input$africa_pm_country,
-                         input$africa_pm_proximity_weight, input$africa_pm_bucket_cap)
+                         input$africa_pm_proximity_weight, input$africa_pm_bucket_cap,
+                         input$africa_pm_geo_mode, input$africa_pm_geo_selection)
   })
   output$africa_pm_context    <- renderUI({ region_pm_context_ui(africa_pm_alloc()) })
   output$africa_pm_stat_cards <- renderUI({ region_pm_stat_cards(africa_pm_alloc()) })
@@ -8004,8 +10463,6 @@ server <- function(input, output, session) {
   wire_synthetic_cp <- function(prefix, region_label) {
     id <- function(suffix) paste0(prefix, "_cp_", suffix)
 
-    calc_trigger <- eventReactive(input[[id("calculate")]], { Sys.time() }, ignoreNULL = FALSE)
-
     output[[id("template_download")]] <- downloadHandler(
       filename = function() "emissions_data_template.xlsx",
       content = function(file) {
@@ -8082,8 +10539,7 @@ server <- function(input, output, session) {
     })
 
     output[[id("trend_plot")]] <- renderPlot({
-      calc_trigger()
-      isolate({
+      
         bm <- benchmark()
         req(nrow(bm) > 0)
         ud <- tryCatch(user_data(), error = function(e) NULL)
@@ -8114,12 +10570,11 @@ server <- function(input, output, session) {
           labs(subtitle = paste0(region_label, " -- ", input[[id("sector")]], " sector, ", input[[id("country")]]),
                x = NULL, y = "Emissions (tCO2e)") +
           theme_minimal(base_size = 13) + theme(plot.subtitle = element_text(color = "grey40", size = 10.5))
-      })
+      
     })
 
     output[[id("table")]] <- renderDT({
-      calc_trigger()
-      isolate({
+      
         bm <- benchmark() %>% transmute(year, sector_benchmark = round(emissions))
         ud <- tryCatch(user_data(), error = function(e) NULL)
         out <- bm
@@ -8127,7 +10582,7 @@ server <- function(input, output, session) {
           out <- out %>% full_join(ud %>% transmute(year, your_data = round(emissions)), by = "year") %>% arrange(year)
         }
         datatable(out, options = list(pageLength = 15, dom = "tp"), rownames = FALSE)
-      })
+      
     })
   }
 
@@ -8145,7 +10600,12 @@ server <- function(input, output, session) {
   # real UI is what's actually shown.
   if (has_asia_data) {
 
-    asia_rcp_calc_trigger <- eventReactive(input$asia_rcp_calculate, { Sys.time() }, ignoreNULL = FALSE)
+    init_server_side_company_picker(session, "asia_rcp", asia_company_choices, "asia_rcp_existing_picker")
+    updateSelectizeInput(session, "asia_pm_gap_company", choices = c("Type to search..." = "", asia_company_choices),
+                          selected = character(0), server = TRUE)
+    wire_single_match_company(input, session, "asia_rcp", "asia_rcp_existing_picker", "asia_rcp_new_name",
+                               choices_fn = function() asia_company_choices)
+
 
     # Company-level data already -- no facility-to-company aggregation
     # needed the way EU's facility_lookup_eu required, since each row
@@ -8200,6 +10660,24 @@ server <- function(input, output, session) {
         tibble(company_id = NA_character_, company_name = trimws(input$asia_rcp_new_name),
                country = input$asia_rcp_country, sector = input$asia_rcp_sector)
       }
+    })
+
+    # Sidebar header -- same read-only pattern as the US/EU/Chile
+    # Company Profile tabs (company name + sector + location).
+    output$asia_rcp_profile_header <- renderUI({
+      m <- tryCatch(asia_rcp_meta(), error = function(e) NULL)
+      company <- if (!is.null(m) && nrow(m) > 0 && nzchar(trimws(m$company_name[1]))) m$company_name[1] else "New company"
+      sector  <- if (!is.null(m) && nrow(m) > 0) m$sector[1] else NULL
+      country <- if (!is.null(m) && nrow(m) > 0) m$country[1] else NULL
+      tags$div(
+        style = "margin-bottom:2px;",
+        tags$h4(style = "margin:0 0 4px 0; font-weight:700; color:#FFFFFF; font-size:16px; line-height:1.3;", company),
+        tags$div(
+          style = "font-size:12px; color:#EAF6F9; line-height:1.5;",
+          if (!is.null(sector)) sector else "Sector not set",
+          if (!is.null(country)) tags$span(" -- ", country) else NULL
+        )
+      )
     })
 
     output$asia_rcp_template_download <- downloadHandler(
@@ -8384,37 +10862,36 @@ server <- function(input, output, session) {
       )
     })
 
-    # Full US-style multi-series chart: Industry benchmark (observed/
-    # forecast), Your emissions (observed/forecast), Your stated goal,
-    # SBTi-calculated goal, Industry-calculated goal -- same colors/
-    # linetypes as build_intake_trend_plot() for US, same +/-10%
-    # shaded error band around "Your forecast" only (illustrative, not
-    # a real statistical interval -- stated as such in the subtitle,
-    # same discipline as US).
+    # Full US-style multi-series chart: Industry emissions (observed/
+    # forecast), Emissions (observed/forecast), Your stated goal, SBTi-
+    # calculated goal, Industry-calculated goal -- rebuilt to match
+    # build_intake_trend_plot() (US) exactly: same series names/palette,
+    # the shaded +/-10% forecast band, the "Today" divider, and the
+    # gap-to-goal subtitle callout, per direct request to keep this tab
+    # as consistent as possible with the US case.
     asia_rcp_build_plot <- function(scope_num, scope_label, hist_df, has_forecast_line) {
       req(!is.null(hist_df), nrow(hist_df) > 0)
       m <- asia_rcp_meta()
-      col <- "#2980B9"
       series_list <- list()
 
       bm_hist <- tryCatch(asia_rcp_sector_benchmark_hist(scope_num, m$sector[1]), error = function(e) tibble())
       if (nrow(bm_hist) > 0) {
-        series_list[["Industry benchmark (observed)"]] <- bm_hist
+        series_list[["Industry emissions"]] <- bm_hist
         bm_fore <- tryCatch(asia_rcp_sector_benchmark_forecast(scope_num, m$sector[1], bm_hist), error = function(e) tibble())
         if (nrow(bm_fore) > 0) {
           bridge <- bind_rows(bm_hist %>% filter(year == max(year)), bm_fore) %>% distinct(year, .keep_all = TRUE)
-          series_list[["Industry benchmark (forecast)"]] <- bridge
+          series_list[["Industry emissions (forecast)"]] <- bridge
         }
       }
 
-      series_list[["Your emissions (observed)"]] <- hist_df %>% transmute(year, value = emissions)
+      series_list[["Emissions"]] <- hist_df %>% transmute(year, value = emissions)
 
       if (has_forecast_line) {
         fore_df <- tryCatch(asia_rcp_forecast(), error = function(e) tibble())
         if (nrow(fore_df) > 0) {
           bridge <- bind_rows(hist_df %>% filter(year == max(year)) %>% transmute(year, value = emissions),
                                fore_df %>% transmute(year, value = p50))
-          series_list[["Your forecast"]] <- bridge
+          series_list[["Emissions (forecast)"]] <- bridge
         }
       }
 
@@ -8440,43 +10917,96 @@ server <- function(input, output, session) {
       plot_df <- bind_rows(lapply(names(series_list), function(nm) series_list[[nm]] %>% mutate(series = nm))) %>%
         mutate(series = factor(series, levels = names(series_list)))
 
-      point_df <- plot_df %>% filter(series %in% c("Industry benchmark (observed)", "Your emissions (observed)"))
+      point_df <- plot_df %>% filter(series %in% c("Industry emissions", "Emissions"))
+
+      # Shaded +/-10% uncertainty band around the forecasted segment --
+      # same treatment as the US/EU/Chile Company Profile trend charts.
+      forecast_band_df <- plot_df %>% filter(series == "Emissions (forecast)", !is.na(value)) %>%
+        mutate(ymin = value * 0.9, ymax = value * 1.1)
 
       series_colors <- c(
-        "Industry benchmark (observed)" = "grey55", "Industry benchmark (forecast)" = "grey55",
-        "Your emissions (observed)" = col, "Your forecast" = col,
-        "Your stated goal" = target_color, "SBTi-calculated goal" = "#8E44AD",
+        "Industry emissions" = "#4A6274", "Industry emissions (forecast)" = "#A9BCC9",
+        "Emissions" = "#C0392B", "Emissions (forecast)" = "#E59A8F",
+        "Your stated goal" = "#8E44AD", "SBTi-calculated goal" = "#27AE60",
         "Industry-calculated goal" = "#F39C12"
       )
       series_linetypes <- c(
-        "Industry benchmark (observed)" = "solid", "Industry benchmark (forecast)" = "dashed",
-        "Your emissions (observed)" = "solid", "Your forecast" = "dashed",
-        "Your stated goal" = "dotted", "SBTi-calculated goal" = "dashed",
-        "Industry-calculated goal" = "dotdash"
+        "Industry emissions" = "solid", "Industry emissions (forecast)" = "dashed",
+        "Emissions" = "solid", "Emissions (forecast)" = "dashed",
+        "Your stated goal" = "solid", "SBTi-calculated goal" = "twodash",
+        "Industry-calculated goal" = "solid"
+      )
+      series_linewidths <- c(
+        "Industry emissions" = 0.8, "Industry emissions (forecast)" = 0.8,
+        "Emissions" = 1.9, "Emissions (forecast)" = 1.9,
+        "Your stated goal" = 1.0, "SBTi-calculated goal" = 1.0,
+        "Industry-calculated goal" = 1.0
+      )
+      anchor_series <- c("Industry emissions", "Emissions", "Your stated goal",
+                          "SBTi-calculated goal", "Industry-calculated goal")
+
+      observed_last_year <- if (nrow(point_df) > 0) suppressWarnings(max(point_df$year, na.rm = TRUE)) else NA_real_
+      plot_max_year <- suppressWarnings(max(plot_df$year, na.rm = TRUE))
+      show_today_marker <- is.finite(observed_last_year) && is.finite(plot_max_year) && plot_max_year > observed_last_year
+
+      # "SO WHAT" CALLOUT -- matches the US/EU/Chile chart: states the
+      # actual gap between where emissions are headed and the goal line.
+      gap_note <- ""
+      goal_years  <- plot_df$year[plot_df$series == "Your stated goal" & !is.na(plot_df$value)]
+      emiss_years <- plot_df$year[plot_df$series %in% c("Emissions", "Emissions (forecast)") & !is.na(plot_df$value)]
+      common_year <- suppressWarnings(max(intersect(goal_years, emiss_years), na.rm = TRUE))
+      if (is.finite(common_year)) {
+        goal_val  <- plot_df$value[plot_df$series == "Your stated goal" & plot_df$year == common_year][1]
+        emiss_val <- plot_df$value[plot_df$series %in% c("Emissions", "Emissions (forecast)") & plot_df$year == common_year][1]
+        if (!is.na(goal_val) && !is.na(emiss_val)) {
+          gap <- emiss_val - goal_val
+          gap_note <- paste0(
+            " -- ", if (gap > 0) "gap to goal in " else "ahead of goal in ", common_year,
+            ": ", comma(round(abs(gap))), " t"
+          )
+        }
+      }
+
+      label_df <- plot_df %>% filter(!is.na(value), series %in% anchor_series) %>% group_by(series) %>% filter(year == max(year)) %>% ungroup()
+      circle_df <- plot_df %>% filter(series == "Your stated goal")
+
+      base_subtitle <- paste0(
+        m$sector[1], " -- ", scope_label,
+        if (!has_forecast_line) " (no forecast model for this scope -- benchmark forecast is the sector's last observed value held flat)" else ""
       )
 
-      # Illustrative +/-10% band, "Your forecast" only -- same
-      # reasoning and fixed value as US: not derived from any actual
-      # uncertainty estimate, so labeled as such in the subtitle
-      # rather than implied to be a real confidence interval.
-      forecast_band_df <- plot_df %>% filter(series == "Your forecast") %>% mutate(ymin = value * 0.9, ymax = value * 1.1)
+      p <- ggplot(plot_df, aes(x = year, y = value, color = series, linetype = series, linewidth = series, group = series)) +
+        { if (show_today_marker) annotate("rect", xmin = observed_last_year, xmax = Inf, ymin = -Inf, ymax = Inf, fill = "grey50", alpha = 0.035) } +
+        { if (show_today_marker) geom_vline(xintercept = observed_last_year, color = "grey60", linewidth = 0.5, linetype = "22") } +
+        { if (show_today_marker) {
+            annotate("text", x = observed_last_year, y = Inf, label = "Today",
+                     vjust = 1.6, hjust = -0.15, size = 3.1, color = "grey45", fontface = "italic")
+          } } +
+        { if (nrow(forecast_band_df) > 0) {
+            geom_ribbon(data = forecast_band_df, aes(x = year, ymin = ymin, ymax = ymax),
+                        inherit.aes = FALSE, fill = "#C0392B", alpha = 0.15)
+          } } +
+        geom_line() +
+        geom_point(data = circle_df, shape = 21, fill = "white", stroke = 1.1, size = 2.1) +
+        geom_point(data = point_df, size = 1.8) +
+        scale_color_manual(values = series_colors, breaks = anchor_series, name = NULL) +
+        scale_linetype_manual(values = series_linetypes, breaks = anchor_series, name = NULL) +
+        scale_linewidth_manual(values = series_linewidths, breaks = anchor_series, name = NULL) +
+        scale_x_continuous(breaks = scales::pretty_breaks(), expand = expansion(mult = c(0.02, if (has_ggrepel) 0.22 else 0.02))) +
+        scale_y_continuous(labels = comma) +
+        labs(subtitle = paste0(base_subtitle, gap_note), x = NULL, y = paste0("Emissions (tCO2e, ", scope_label, ")")) +
+        trend_chart_theme(base_size = 13, show_legend = !has_ggrepel)
 
-      ggplot(plot_df, aes(x = year, y = value, color = series, linetype = series, group = series)) +
-        { if (nrow(forecast_band_df) > 0) geom_ribbon(data = forecast_band_df, aes(x = year, ymin = ymin, ymax = ymax), inherit.aes = FALSE, fill = col, alpha = 0.15) } +
-        geom_line(linewidth = 1.1) +
-        geom_point(data = point_df, aes(x = year, y = value, color = series), inherit.aes = FALSE, size = 1.8) +
-        scale_color_manual(values = series_colors, name = NULL) +
-        scale_linetype_manual(values = series_linetypes, name = NULL) +
-        scale_x_continuous(breaks = scales::pretty_breaks()) + scale_y_continuous(labels = comma) +
-        labs(
-          subtitle = paste0(
-            m$sector[1], " -- ", scope_label,
-            if (!has_forecast_line) " (no forecast model for this scope -- benchmark forecast is the sector's last observed value held flat)" else "",
-            if (nrow(forecast_band_df) > 0) " -- shaded band = illustrative +/-10% projection error margin" else ""
-          ),
-          x = NULL, y = paste0("Emissions (tCO2e, ", scope_label, ")")
-        ) +
-        theme_minimal(base_size = 13) + theme(plot.subtitle = element_text(color = "grey40", size = 10.5))
+      if (has_ggrepel) {
+        p <- p + ggrepel::geom_text_repel(
+          data = label_df, aes(label = series), hjust = 0, direction = "y",
+          nudge_x = (plot_max_year - min(plot_df$year, na.rm = TRUE)) * 0.03 + 0.6,
+          xlim = c(plot_max_year, NA), segment.size = 0.3, segment.color = "grey70",
+          size = 3.3, fontface = "bold", show.legend = FALSE, seed = 42, box.padding = 0.25
+        )
+      }
+
+      p
     }
 
     asia_rcp_build_table <- function(hist_df, include_forecast) {
@@ -8494,36 +11024,30 @@ server <- function(input, output, session) {
     }
 
     output$asia_rcp_trend_plot_s1 <- renderPlot({
-      asia_rcp_calc_trigger()
-      isolate({
+      
         m <- asia_rcp_meta()
         asia_rcp_build_plot(1, "Scope 1", asia_rcp_company_hist_s1(), has_forecast_line = !is.na(m$company_id[1]))
-      })
+      
     })
     output$asia_rcp_table_s1 <- renderDT({
-      asia_rcp_calc_trigger()
-      isolate({
+      
         m <- asia_rcp_meta()
         asia_rcp_build_table(asia_rcp_company_hist_s1(), include_forecast = !is.na(m$company_id[1]))
-      })
+      
     })
 
     output$asia_rcp_trend_plot_s2 <- renderPlot({
-      asia_rcp_calc_trigger()
-      isolate({ asia_rcp_build_plot(2, "Scope 2", asia_rcp_company_hist_s2(), has_forecast_line = FALSE) })
+       asia_rcp_build_plot(2, "Scope 2", asia_rcp_company_hist_s2(), has_forecast_line = FALSE) 
     })
     output$asia_rcp_table_s2 <- renderDT({
-      asia_rcp_calc_trigger()
-      isolate({ asia_rcp_build_table(asia_rcp_company_hist_s2(), include_forecast = FALSE) })
+       asia_rcp_build_table(asia_rcp_company_hist_s2(), include_forecast = FALSE) 
     })
 
     output$asia_rcp_trend_plot_s3 <- renderPlot({
-      asia_rcp_calc_trigger()
-      isolate({ asia_rcp_build_plot(3, "Scope 3", asia_rcp_company_hist_s3(), has_forecast_line = FALSE) })
+       asia_rcp_build_plot(3, "Scope 3", asia_rcp_company_hist_s3(), has_forecast_line = FALSE) 
     })
     output$asia_rcp_table_s3 <- renderDT({
-      asia_rcp_calc_trigger()
-      isolate({ asia_rcp_build_table(asia_rcp_company_hist_s3(), include_forecast = FALSE) })
+       asia_rcp_build_table(asia_rcp_company_hist_s3(), include_forecast = FALSE) 
     })
 
     # ---- SBTi Detail for Asia -- reuses sbti_calculate() directly
@@ -8606,8 +11130,7 @@ server <- function(input, output, session) {
     })
 
     output$asia_rcp_sbti_plot <- renderPlot({
-      asia_rcp_calc_trigger()
-      isolate({
+      
         result <- tryCatch(asia_rcp_sbti_result(), error = function(e) list(error = conditionMessage(e)))
         req(is.null(result$error))
         df <- result$path
@@ -8630,12 +11153,11 @@ server <- function(input, output, session) {
             x = NULL, y = "Emissions (tCO2e)"
           ) +
           theme_minimal(base_size = 14) + theme(plot.subtitle = element_text(color = "grey40", size = 11), legend.position = "bottom")
-      })
+      
     })
 
     output$asia_rcp_sbti_table <- renderDT({
-      asia_rcp_calc_trigger()
-      isolate({
+      
         result <- tryCatch(asia_rcp_sbti_result(), error = function(e) list(error = conditionMessage(e)))
         if (!is.null(result$error)) return(datatable(data.frame(Error = result$error), rownames = FALSE, options = list(dom = "t")))
         df <- result$path %>% mutate(across(-year, ~round(.x)))
@@ -8645,7 +11167,7 @@ server <- function(input, output, session) {
         if ("scope3_emissions" %in% names(df)) colnames_display <- c(colnames_display, "Scope 3 (tCO2e)")
         colnames_display <- c(colnames_display, "Total (tCO2e)")
         datatable(df, rownames = FALSE, options = list(pageLength = 20, dom = "tp"), colnames = colnames_display)
-      })
+      
     })
 
     # ---- Level bars + gap bars for each scope -- reuses
@@ -8720,8 +11242,7 @@ server <- function(input, output, session) {
                                 "1" = asia_rcp_company_hist_s1, "2" = asia_rcp_company_hist_s2, "3" = asia_rcp_company_hist_s3)
 
         output[[paste0("asia_rcp_level_bar_s", scope_n)]] <- renderPlot({
-          asia_rcp_calc_trigger()
-          isolate({
+          
             df <- tryCatch(asia_rcp_scope_gap_df(scope_n), error = function(e) NULL)
             req(!is.null(df), nrow(df) > 0)
             make_scope_level_bar_plot(
@@ -8729,12 +11250,11 @@ server <- function(input, output, session) {
               paste0("scope", scope_n, "_target_sbti"), industry_col = paste0("scope", scope_n, "_target_industry"),
               real_data = real_data_fn()
             )
-          })
+          
         })
 
         output[[paste0("asia_rcp_gap_bar_s", scope_n)]] <- renderPlot({
-          asia_rcp_calc_trigger()
-          isolate({
+          
             df <- tryCatch(asia_rcp_scope_gap_df(scope_n), error = function(e) NULL)
             req(!is.null(df), nrow(df) > 0)
             df <- df %>% mutate(
@@ -8743,7 +11263,7 @@ server <- function(input, output, session) {
               gap_industry = .data[[paste0("scope", scope_n, "_forecast")]] - .data[[paste0("scope", scope_n, "_target_industry")]]
             )
             make_scope_gap_pair_plot(df, "gap_own", "gap_sbti", industry_col = "gap_industry")
-          })
+          
         })
       })
     }
@@ -8760,7 +11280,12 @@ server <- function(input, output, session) {
   # are absent, honestly, because there's nothing to draw them from.
   if (has_africa_data) {
 
-    africa_rcp_calc_trigger <- eventReactive(input$africa_rcp_calculate, { Sys.time() }, ignoreNULL = FALSE)
+    init_server_side_company_picker(session, "africa_rcp", africa_company_choices, "africa_rcp_existing_picker")
+    updateSelectizeInput(session, "africa_pm_gap_company", choices = c("Type to search..." = "", africa_company_choices),
+                          selected = character(0), server = TRUE)
+    wire_single_match_company(input, session, "africa_rcp", "africa_rcp_existing_picker", "africa_rcp_new_name",
+                               choices_fn = function() africa_company_choices)
+
 
     africa_rcp_selected_id <- reactive({
       if (identical(input$africa_rcp_mode, "existing")) {
@@ -8781,6 +11306,24 @@ server <- function(input, output, session) {
         tibble(company_id = NA_character_, company_name = trimws(input$africa_rcp_new_name),
                country = "South Africa", sector = input$africa_rcp_sector)
       }
+    })
+
+    # Sidebar header -- same read-only pattern as the US/EU/Chile/Asia
+    # Company Profile tabs (company name + sector + location).
+    output$africa_rcp_profile_header <- renderUI({
+      m <- tryCatch(africa_rcp_meta(), error = function(e) NULL)
+      company <- if (!is.null(m) && nrow(m) > 0 && nzchar(trimws(m$company_name[1]))) m$company_name[1] else "New company"
+      sector  <- if (!is.null(m) && nrow(m) > 0) m$sector[1] else NULL
+      country <- if (!is.null(m) && nrow(m) > 0) m$country[1] else NULL
+      tags$div(
+        style = "margin-bottom:2px;",
+        tags$h4(style = "margin:0 0 4px 0; font-weight:700; color:#FFFFFF; font-size:16px; line-height:1.3;", company),
+        tags$div(
+          style = "font-size:12px; color:#EAF6F9; line-height:1.5;",
+          if (!is.null(sector)) sector else "Sector not set",
+          if (!is.null(country)) tags$span(" -- ", country) else NULL
+        )
+      )
     })
 
     africa_rcp_hist_for <- function(scope_col, csv_input_id) {
@@ -8987,8 +11530,7 @@ server <- function(input, output, session) {
     })
 
     output$africa_rcp_sbti_plot <- renderPlot({
-      africa_rcp_calc_trigger()
-      isolate({
+      
         result <- tryCatch(africa_rcp_sbti_result(), error = function(e) list(error = conditionMessage(e)))
         req(is.null(result$error))
         df <- result$path
@@ -9008,12 +11550,11 @@ server <- function(input, output, session) {
             x = NULL, y = "Emissions (tCO2e)"
           ) +
           theme_minimal(base_size = 14) + theme(plot.subtitle = element_text(color = "grey40", size = 11), legend.position = "bottom")
-      })
+      
     })
 
     output$africa_rcp_sbti_table <- renderDT({
-      africa_rcp_calc_trigger()
-      isolate({
+      
         result <- tryCatch(africa_rcp_sbti_result(), error = function(e) list(error = conditionMessage(e)))
         if (!is.null(result$error)) return(datatable(data.frame(Error = result$error), rownames = FALSE, options = list(dom = "t")))
         df <- result$path %>% mutate(across(-year, ~round(.x)))
@@ -9023,26 +11564,28 @@ server <- function(input, output, session) {
         if ("scope3_emissions" %in% names(df)) colnames_display <- c(colnames_display, "Scope 3 (tCO2e)")
         colnames_display <- c(colnames_display, "Total (tCO2e)")
         datatable(df, rownames = FALSE, options = list(pageLength = 20, dom = "tp"), colnames = colnames_display)
-      })
+      
     })
 
-    # Trend plot -- deliberately simpler than Asia's: no "Industry
-    # benchmark (forecast)" or "Your forecast" series at all, since
-    # neither exists for this single-year source. Just the real
-    # comparison points that genuinely exist: sector benchmark (one
+    # Trend plot -- deliberately simpler than Asia's: no forecast series
+    # at all, since none exists for this single-year source. Just the
+    # real comparison points that genuinely exist: sector benchmark (one
     # point), your own data (one point, or more if a new company
     # entered several years), your stated goal, SBTi-calculated goal,
-    # industry-calculated goal.
+    # industry-calculated goal. Rebuilt to match build_intake_trend_
+    # plot() (US) exactly wherever a series has a real US counterpart --
+    # same names/palette, gap-to-goal callout, "Today" divider, and
+    # shared modern theme -- per direct request to keep this tab as
+    # consistent as possible with the US case.
     africa_rcp_build_plot <- function(scope_num, scope_label, hist_df) {
       req(!is.null(hist_df), nrow(hist_df) > 0)
       m <- africa_rcp_meta()
-      col <- "#2980B9"
       series_list <- list()
 
       bm_hist <- tryCatch(africa_rcp_sector_benchmark_hist(scope_num, m$sector[1]), error = function(e) tibble())
-      if (nrow(bm_hist) > 0) series_list[["Industry benchmark (observed)"]] <- bm_hist
+      if (nrow(bm_hist) > 0) series_list[["Industry emissions"]] <- bm_hist
 
-      series_list[["Your emissions (observed)"]] <- hist_df %>% transmute(year, value = emissions)
+      series_list[["Emissions"]] <- hist_df %>% transmute(year, value = emissions)
 
       base_year <- max(hist_df$year); base_val <- hist_df$emissions[hist_df$year == base_year][1]
       target_year <- input$africa_rcp_target_year
@@ -9065,28 +11608,76 @@ server <- function(input, output, session) {
 
       plot_df <- bind_rows(lapply(names(series_list), function(nm) series_list[[nm]] %>% mutate(series = nm))) %>%
         mutate(series = factor(series, levels = names(series_list)))
-      point_df <- plot_df %>% filter(series %in% c("Industry benchmark (observed)", "Your emissions (observed)"))
+      point_df <- plot_df %>% filter(series %in% c("Industry emissions", "Emissions"))
 
       series_colors <- c(
-        "Industry benchmark (observed)" = "grey55", "Your emissions (observed)" = col,
-        "Your stated goal" = target_color, "SBTi-calculated goal" = "#8E44AD", "Industry-calculated goal" = "#F39C12"
+        "Industry emissions" = "#4A6274", "Emissions" = "#C0392B",
+        "Your stated goal" = "#8E44AD", "SBTi-calculated goal" = "#27AE60", "Industry-calculated goal" = "#F39C12"
       )
       series_linetypes <- c(
-        "Industry benchmark (observed)" = "solid", "Your emissions (observed)" = "solid",
-        "Your stated goal" = "dotted", "SBTi-calculated goal" = "dashed", "Industry-calculated goal" = "dotdash"
+        "Industry emissions" = "solid", "Emissions" = "solid",
+        "Your stated goal" = "solid", "SBTi-calculated goal" = "twodash", "Industry-calculated goal" = "solid"
       )
+      series_linewidths <- c(
+        "Industry emissions" = 0.8, "Emissions" = 1.9,
+        "Your stated goal" = 1.0, "SBTi-calculated goal" = 1.0, "Industry-calculated goal" = 1.0
+      )
+      anchor_series <- c("Industry emissions", "Emissions", "Your stated goal",
+                          "SBTi-calculated goal", "Industry-calculated goal")
 
-      ggplot(plot_df, aes(x = year, y = value, color = series, linetype = series, group = series)) +
-        geom_line(linewidth = 1.1) +
-        geom_point(data = point_df, aes(x = year, y = value, color = series), inherit.aes = FALSE, size = 2.2) +
-        scale_color_manual(values = series_colors, name = NULL) +
-        scale_linetype_manual(values = series_linetypes, name = NULL) +
-        scale_x_continuous(breaks = scales::pretty_breaks()) + scale_y_continuous(labels = comma) +
-        labs(
-          subtitle = paste0(m$sector[1], " -- ", scope_label, " (2018 single-year data -- no forecast model for this source)"),
-          x = NULL, y = paste0("Emissions (tCO2e, ", scope_label, ")")
-        ) +
-        theme_minimal(base_size = 13) + theme(plot.subtitle = element_text(color = "grey40", size = 10.5))
+      observed_last_year <- if (nrow(point_df) > 0) suppressWarnings(max(point_df$year, na.rm = TRUE)) else NA_real_
+      plot_max_year <- suppressWarnings(max(plot_df$year, na.rm = TRUE))
+      show_today_marker <- is.finite(observed_last_year) && is.finite(plot_max_year) && plot_max_year > observed_last_year
+
+      gap_note <- ""
+      goal_years  <- plot_df$year[plot_df$series == "Your stated goal" & !is.na(plot_df$value)]
+      emiss_years <- plot_df$year[plot_df$series == "Emissions" & !is.na(plot_df$value)]
+      common_year <- suppressWarnings(max(intersect(goal_years, emiss_years), na.rm = TRUE))
+      if (is.finite(common_year)) {
+        goal_val  <- plot_df$value[plot_df$series == "Your stated goal" & plot_df$year == common_year][1]
+        emiss_val <- plot_df$value[plot_df$series == "Emissions" & plot_df$year == common_year][1]
+        if (!is.na(goal_val) && !is.na(emiss_val)) {
+          gap <- emiss_val - goal_val
+          gap_note <- paste0(
+            " -- ", if (gap > 0) "gap to goal in " else "ahead of goal in ", common_year,
+            ": ", comma(round(abs(gap))), " t"
+          )
+        }
+      }
+
+      label_df <- plot_df %>% filter(!is.na(value), series %in% anchor_series) %>% group_by(series) %>% filter(year == max(year)) %>% ungroup()
+      circle_df <- plot_df %>% filter(series == "Your stated goal")
+
+      base_subtitle <- paste0(m$sector[1], " -- ", scope_label, " (2018 single-year data -- no forecast model for this source)")
+
+      p <- ggplot(plot_df, aes(x = year, y = value, color = series, linetype = series, linewidth = series, group = series)) +
+        { if (show_today_marker) annotate("rect", xmin = observed_last_year, xmax = Inf, ymin = -Inf, ymax = Inf, fill = "grey50", alpha = 0.035) } +
+        { if (show_today_marker) geom_vline(xintercept = observed_last_year, color = "grey60", linewidth = 0.5, linetype = "22") } +
+        { if (show_today_marker) {
+            annotate("text", x = observed_last_year, y = Inf, label = "Today",
+                     vjust = 1.6, hjust = -0.15, size = 3.1, color = "grey45", fontface = "italic")
+          } } +
+        geom_line() +
+        geom_point(data = circle_df, shape = 21, fill = "white", stroke = 1.1, size = 2.1) +
+        geom_point(data = point_df, size = 1.8) +
+        scale_color_manual(values = series_colors, breaks = anchor_series, name = NULL) +
+        scale_linetype_manual(values = series_linetypes, breaks = anchor_series, name = NULL) +
+        scale_linewidth_manual(values = series_linewidths, breaks = anchor_series, name = NULL) +
+        scale_x_continuous(breaks = scales::pretty_breaks(), expand = expansion(mult = c(0.02, if (has_ggrepel) 0.22 else 0.02))) +
+        scale_y_continuous(labels = comma) +
+        labs(subtitle = paste0(base_subtitle, gap_note), x = NULL, y = paste0("Emissions (tCO2e, ", scope_label, ")")) +
+        trend_chart_theme(base_size = 13, show_legend = !has_ggrepel)
+
+      if (has_ggrepel) {
+        p <- p + ggrepel::geom_text_repel(
+          data = label_df, aes(label = series), hjust = 0, direction = "y",
+          nudge_x = (plot_max_year - min(plot_df$year, na.rm = TRUE)) * 0.03 + 0.6,
+          xlim = c(plot_max_year, NA), segment.size = 0.3, segment.color = "grey70",
+          size = 3.3, fontface = "bold", show.legend = FALSE, seed = 42, box.padding = 0.25
+        )
+      }
+
+      p
     }
 
     africa_rcp_build_table <- function(hist_df) {
@@ -9096,28 +11687,22 @@ server <- function(input, output, session) {
     }
 
     output$africa_rcp_trend_plot_s1 <- renderPlot({
-      africa_rcp_calc_trigger()
-      isolate({ africa_rcp_build_plot(1, "Scope 1", africa_rcp_company_hist_s1()) })
+       africa_rcp_build_plot(1, "Scope 1", africa_rcp_company_hist_s1()) 
     })
     output$africa_rcp_table_s1 <- renderDT({
-      africa_rcp_calc_trigger()
-      isolate({ africa_rcp_build_table(africa_rcp_company_hist_s1()) })
+       africa_rcp_build_table(africa_rcp_company_hist_s1()) 
     })
     output$africa_rcp_trend_plot_s2 <- renderPlot({
-      africa_rcp_calc_trigger()
-      isolate({ africa_rcp_build_plot(2, "Scope 2", africa_rcp_company_hist_s2()) })
+       africa_rcp_build_plot(2, "Scope 2", africa_rcp_company_hist_s2()) 
     })
     output$africa_rcp_table_s2 <- renderDT({
-      africa_rcp_calc_trigger()
-      isolate({ africa_rcp_build_table(africa_rcp_company_hist_s2()) })
+       africa_rcp_build_table(africa_rcp_company_hist_s2()) 
     })
     output$africa_rcp_trend_plot_s3 <- renderPlot({
-      africa_rcp_calc_trigger()
-      isolate({ africa_rcp_build_plot(3, "Scope 3", africa_rcp_company_hist_s3()) })
+       africa_rcp_build_plot(3, "Scope 3", africa_rcp_company_hist_s3()) 
     })
     output$africa_rcp_table_s3 <- renderDT({
-      africa_rcp_calc_trigger()
-      isolate({ africa_rcp_build_table(africa_rcp_company_hist_s3()) })
+       africa_rcp_build_table(africa_rcp_company_hist_s3()) 
     })
 
     # Level/gap bars -- "forecast_col" here is just the single
@@ -9171,8 +11756,7 @@ server <- function(input, output, session) {
                                 "1" = africa_rcp_company_hist_s1, "2" = africa_rcp_company_hist_s2, "3" = africa_rcp_company_hist_s3)
 
         output[[paste0("africa_rcp_level_bar_s", scope_n)]] <- renderPlot({
-          africa_rcp_calc_trigger()
-          isolate({
+          
             df <- tryCatch(africa_rcp_scope_gap_df(scope_n), error = function(e) NULL)
             req(!is.null(df), nrow(df) > 0)
             make_scope_level_bar_plot(
@@ -9180,12 +11764,11 @@ server <- function(input, output, session) {
               paste0("scope", scope_n, "_target_sbti"), industry_col = paste0("scope", scope_n, "_target_industry"),
               real_data = real_data_fn()
             )
-          })
+          
         })
 
         output[[paste0("africa_rcp_gap_bar_s", scope_n)]] <- renderPlot({
-          africa_rcp_calc_trigger()
-          isolate({
+          
             df <- tryCatch(africa_rcp_scope_gap_df(scope_n), error = function(e) NULL)
             req(!is.null(df), nrow(df) > 0)
             df <- df %>% mutate(
@@ -9194,23 +11777,28 @@ server <- function(input, output, session) {
               gap_industry = .data[[paste0("scope", scope_n, "_forecast")]] - .data[[paste0("scope", scope_n, "_target_industry")]]
             )
             make_scope_gap_pair_plot(df, "gap_own", "gap_sbti", industry_col = "gap_industry")
-          })
+          
         })
       })
     }
   }
 
   # ---- Real-data Australia Company Profile server logic ----
-  # Same overall shape as Africa's, with Industry benchmark/Target
-  # genuinely removed rather than hidden -- there is no sector column
-  # in the NGER source, so there's nothing methodologically sound to
-  # group companies by for a benchmark comparison. SBTi still works
-  # fully for Scope 1/2 (its math needs a base year and target year,
-  # not a sector), and a new company can still add their own Scope 3
-  # even though no real matched company has one.
+  # Same overall shape as Africa's, including Industry benchmark/
+  # Target now that real GICS Sector data exists (joined in by the
+  # pipeline from a separately-researched mapping -- NGER's own table
+  # has no industry column). Scope 3 stays SBTi/own-goal only, no
+  # Industry line -- NGER never reports Scope 3 for any real company,
+  # so there is no sector median to compare against there, though a
+  # new company can still add their own Scope 3 data.
   if (has_australia_data) {
 
-    australia_rcp_calc_trigger <- eventReactive(input$australia_rcp_calculate, { Sys.time() }, ignoreNULL = FALSE)
+    init_server_side_company_picker(session, "australia_rcp", australia_company_choices, "australia_rcp_existing_picker")
+    updateSelectizeInput(session, "au_pm_gap_company", choices = c("Type to search..." = "", australia_company_choices),
+                          selected = character(0), server = TRUE)
+    wire_single_match_company(input, session, "australia_rcp", "australia_rcp_existing_picker", "australia_rcp_new_name",
+                               choices_fn = function() australia_company_choices)
+
 
     australia_rcp_selected_id <- reactive({
       if (identical(input$australia_rcp_mode, "existing")) {
@@ -9234,6 +11822,24 @@ server <- function(input, output, session) {
       }
     })
 
+    # Sidebar header -- same read-only pattern as the US/EU/Chile/Asia/
+    # Africa Company Profile tabs (company name + sector + location).
+    output$australia_rcp_profile_header <- renderUI({
+      m <- tryCatch(australia_rcp_meta(), error = function(e) NULL)
+      company <- if (!is.null(m) && nrow(m) > 0 && nzchar(trimws(m$company_name[1]))) m$company_name[1] else "New company"
+      sector  <- if (!is.null(m) && nrow(m) > 0) m$sector[1] else NULL
+      country <- if (!is.null(m) && nrow(m) > 0) m$country[1] else NULL
+      tags$div(
+        style = "margin-bottom:2px;",
+        tags$h4(style = "margin:0 0 4px 0; font-weight:700; color:#FFFFFF; font-size:16px; line-height:1.3;", company),
+        tags$div(
+          style = "font-size:12px; color:#EAF6F9; line-height:1.5;",
+          if (!is.null(sector)) sector else "Sector not set",
+          if (!is.null(country)) tags$span(" -- ", country) else NULL
+        )
+      )
+    })
+
     australia_rcp_hist_for <- function(scope_col, csv_input_id) {
       cid <- australia_rcp_selected_id()
       if (!is.null(cid)) {
@@ -9246,6 +11852,16 @@ server <- function(input, output, session) {
     australia_rcp_company_hist_s1 <- reactive({ australia_rcp_hist_for("scope1", "australia_rcp_emissions_csv") })
     australia_rcp_company_hist_s2 <- reactive({ australia_rcp_hist_for("scope2", "australia_rcp_emissions_csv_s2") })
     australia_rcp_company_hist_s3 <- reactive({ australia_rcp_hist_for("scope3", "australia_rcp_emissions_csv_s3") })
+
+    # Only Scope 1 has a fitted forecast model (a per-company linear
+    # fit in the pipeline, same approach as Chile) -- Scope 2/3 show
+    # observed + target only, no dashed line, same honest limitation
+    # as Asia's Scope 2/3.
+    australia_rcp_forecast <- reactive({
+      cid <- australia_rcp_selected_id()
+      req(!is.null(cid))
+      future_pred_australia %>% filter(company_id == cid) %>% arrange(year) %>% select(year, p50)
+    })
 
     output$australia_rcp_template_download <- downloadHandler(
       filename = function() "emissions_data_template.xlsx",
@@ -9325,8 +11941,8 @@ server <- function(input, output, session) {
       tags$div(
         style = "background:#EBF5FB; border-left:4px solid #2980B9; border-radius:4px; padding:0.6rem 1rem; margin-bottom:12px; font-size:12.5px;",
         if (is_real) {
-          tagList(tags$b("Real data: "), m$company_name[1],
-                   " -- 2023-24 only, no forecast model (single-year source), no sector data (Industry benchmark/Target unavailable).")
+          tagList(tags$b("Real data: "), m$company_name[1], " (", m$sector[1],
+                   ") -- Scope 1 has a per-company linear forecast; Scope 2 shows observed data only (no fitted model).")
         } else {
           tagList(tags$b("New company: "), "no forecast available -- only your own entered/uploaded data and target line will show. Remember to click Calculate after uploading or pasting.")
         }
@@ -9391,6 +12007,74 @@ server <- function(input, output, session) {
       )
     })
 
+    # Sector benchmark -- median company in the SAME GICS sector,
+    # SINGLE YEAR (2023-24). A real, data-derived comparison point
+    # (from the externally-researched GICS Sector mapping), but a
+    # POINT, not a trend -- there's no forecast to extend it with. No
+    # Scope 3 here -- NGER doesn't report it for any real company, so
+    # a sector median would always be empty for scope_num == 3.
+    australia_rcp_sector_benchmark_hist <- function(scope_num, sector) {
+      req(nzchar(sector), scope_num %in% c(1, 2))
+      scope_col <- paste0("scope", scope_num)
+      australia_panel_filtered %>%
+        filter(sector == !!sector) %>%
+        group_by(year) %>%
+        summarise(value = median(.data[[scope_col]], na.rm = TRUE), .groups = "drop") %>%
+        filter(!is.na(value))
+    }
+
+    # Industry emissions (forecast) -- Scope 1 aggregates
+    # future_pred_australia's per-company forecasts by sector median (a
+    # real extension of the fitted model, not a new one); Scope 2 has
+    # no per-company forecast to aggregate, so its "benchmark forecast"
+    # is the sector median's own last observed value held flat -- same
+    # pattern as Asia's australia_rcp_sector_benchmark_forecast.
+    australia_rcp_sector_benchmark_forecast <- function(scope_num, sector, bm_hist) {
+      req(nzchar(sector), scope_num %in% c(1, 2))
+      if (scope_num == 1) {
+        future_pred_australia %>%
+          filter(sector == !!sector) %>%
+          group_by(year) %>%
+          summarise(value = median(p50, na.rm = TRUE), .groups = "drop") %>%
+          filter(!is.na(value))
+      } else {
+        req(nrow(bm_hist) > 0)
+        last_year <- max(bm_hist$year); last_val <- bm_hist$value[bm_hist$year == last_year][1]
+        target_year <- input$australia_rcp_target_year
+        req(!is.null(target_year), target_year > last_year)
+        tibble(year = (last_year + 1):target_year, value = last_val)
+      }
+    }
+
+    australia_rcp_industry_sbti_result <- reactive({
+      m <- australia_rcp_meta()
+      req(nzchar(m$sector[1]))
+      bm1 <- australia_rcp_sector_benchmark_hist(1, m$sector[1])
+      req(nrow(bm1) > 0)
+      base_year <- min(bm1$year); base_s1 <- bm1$value[bm1$year == base_year][1]
+      mry_year  <- max(bm1$year); mry_s1  <- bm1$value[bm1$year == mry_year][1]
+
+      get_mry_scope <- function(scope_num) {
+        bm <- tryCatch(australia_rcp_sector_benchmark_hist(scope_num, m$sector[1]), error = function(e) tibble())
+        if (nrow(bm) == 0) return(NA_real_)
+        val <- bm$value[bm$year == mry_year][1]
+        if (isTRUE(val > 0)) val else NA_real_
+      }
+      s2_val <- get_mry_scope(2)  # no Scope 3 term -- NGER doesn't report it for anyone
+
+      tryCatch(
+        sbti_calculate(
+          company_name = paste0(m$sector[1], " sector benchmark"),
+          target_setting_method = "Absolute Contraction Approach",
+          base_year = base_year, base_year_s1_e = base_s1, base_year_s2_e = s2_val,
+          target_year = input$australia_rcp_target_year,
+          most_recent_year = mry_year, mry_s1_e = mry_s1, mry_s2_e = s2_val,
+          net_zero_year = 2050
+        ),
+        error = function(e) list(error = conditionMessage(e))
+      )
+    })
+
     output$australia_rcp_sbti_error <- renderUI({
       res <- tryCatch(australia_rcp_sbti_result(), error = function(e) NULL)
       req(!is.null(res), !is.null(res$error))
@@ -9398,8 +12082,7 @@ server <- function(input, output, session) {
     })
 
     output$australia_rcp_sbti_plot <- renderPlot({
-      australia_rcp_calc_trigger()
-      isolate({
+      
         result <- tryCatch(australia_rcp_sbti_result(), error = function(e) list(error = conditionMessage(e)))
         req(is.null(result$error))
         df <- result$path
@@ -9419,12 +12102,11 @@ server <- function(input, output, session) {
             x = NULL, y = "Emissions (tCO2e)"
           ) +
           theme_minimal(base_size = 14) + theme(plot.subtitle = element_text(color = "grey40", size = 11), legend.position = "bottom")
-      })
+      
     })
 
     output$australia_rcp_sbti_table <- renderDT({
-      australia_rcp_calc_trigger()
-      isolate({
+      
         result <- tryCatch(australia_rcp_sbti_result(), error = function(e) list(error = conditionMessage(e)))
         if (!is.null(result$error)) return(datatable(data.frame(Error = result$error), rownames = FALSE, options = list(dom = "t")))
         df <- result$path %>% mutate(across(-year, ~round(.x)))
@@ -9434,18 +12116,44 @@ server <- function(input, output, session) {
         if ("scope3_emissions" %in% names(df)) colnames_display <- c(colnames_display, "Scope 3 (tCO2e)")
         colnames_display <- c(colnames_display, "Total (tCO2e)")
         datatable(df, rownames = FALSE, options = list(pageLength = 20, dom = "tp"), colnames = colnames_display)
-      })
+      
     })
 
-    # Trend plot -- no Industry benchmark/Target series at all here
-    # (unlike Asia/Africa), since no sector data exists to make that
-    # comparison meaningful. Just: your own data, your stated goal,
-    # SBTi-calculated goal.
-    australia_rcp_build_plot <- function(scope_num, scope_label, hist_df) {
+    # Trend plot -- Industry emissions/Industry-calculated goal now
+    # included (Scope 1/2 only -- NGER never reports Scope 3, so there
+    # is no sector median to show for scope_num == 3). Matches
+    # build_intake_trend_plot() (US) / africa_rcp_build_plot() exactly
+    # wherever a series has a counterpart there -- same names/palette,
+    # gap-to-goal callout, "Today" divider, and shared modern theme --
+    # per direct request to keep this tab as consistent as possible
+    # with the US case.
+    australia_rcp_build_plot <- function(scope_num, scope_label, hist_df, has_forecast_line) {
       req(!is.null(hist_df), nrow(hist_df) > 0)
-      col <- "#2980B9"
+      m <- australia_rcp_meta()
       series_list <- list()
-      series_list[["Your emissions (observed)"]] <- hist_df %>% transmute(year, value = emissions)
+
+      if (scope_num %in% c(1, 2)) {
+        bm_hist <- tryCatch(australia_rcp_sector_benchmark_hist(scope_num, m$sector[1]), error = function(e) tibble())
+        if (nrow(bm_hist) > 0) {
+          series_list[["Industry emissions"]] <- bm_hist
+          bm_fore <- tryCatch(australia_rcp_sector_benchmark_forecast(scope_num, m$sector[1], bm_hist), error = function(e) tibble())
+          if (nrow(bm_fore) > 0) {
+            bridge <- bind_rows(bm_hist %>% filter(year == max(year)), bm_fore) %>% distinct(year, .keep_all = TRUE)
+            series_list[["Industry emissions (forecast)"]] <- bridge
+          }
+        }
+      }
+
+      series_list[["Emissions"]] <- hist_df %>% transmute(year, value = emissions)
+
+      if (has_forecast_line) {
+        fore_df <- tryCatch(australia_rcp_forecast(), error = function(e) tibble())
+        if (nrow(fore_df) > 0) {
+          bridge <- bind_rows(hist_df %>% filter(year == max(year)) %>% transmute(year, value = emissions),
+                               fore_df %>% transmute(year, value = p50))
+          series_list[["Emissions (forecast)"]] <- bridge
+        }
+      }
 
       base_year <- max(hist_df$year); base_val <- hist_df$emissions[hist_df$year == base_year][1]
       target_year <- input$australia_rcp_target_year
@@ -9461,59 +12169,145 @@ server <- function(input, output, session) {
         series_list[["SBTi-calculated goal"]] <- sbti_result$path %>% transmute(year, value = .data[[sbti_col]])
       }
 
+      if (scope_num %in% c(1, 2)) {
+        industry_result <- tryCatch(australia_rcp_industry_sbti_result(), error = function(e) list(error = conditionMessage(e)))
+        if (is.null(industry_result$error) && !is.null(industry_result$path) && sbti_col %in% names(industry_result$path)) {
+          series_list[["Industry-calculated goal"]] <- industry_result$path %>% transmute(year, value = .data[[sbti_col]])
+        }
+      }
+
       plot_df <- bind_rows(lapply(names(series_list), function(nm) series_list[[nm]] %>% mutate(series = nm))) %>%
         mutate(series = factor(series, levels = names(series_list)))
-      point_df <- plot_df %>% filter(series == "Your emissions (observed)")
+      point_df <- plot_df %>% filter(series %in% c("Industry emissions", "Emissions"))
 
-      series_colors <- c("Your emissions (observed)" = col, "Your stated goal" = target_color, "SBTi-calculated goal" = "#8E44AD")
-      series_linetypes <- c("Your emissions (observed)" = "solid", "Your stated goal" = "dotted", "SBTi-calculated goal" = "dashed")
+      # Shaded +/-10% uncertainty band around the forecasted segment --
+      # same treatment as the US/EU/Chile/Asia Company Profile trend charts.
+      forecast_band_df <- plot_df %>% filter(series == "Emissions (forecast)", !is.na(value)) %>%
+        mutate(ymin = value * 0.9, ymax = value * 1.1)
 
-      ggplot(plot_df, aes(x = year, y = value, color = series, linetype = series, group = series)) +
-        geom_line(linewidth = 1.1) +
-        geom_point(data = point_df, aes(x = year, y = value, color = series), inherit.aes = FALSE, size = 2.2) +
-        scale_color_manual(values = series_colors, name = NULL) +
-        scale_linetype_manual(values = series_linetypes, name = NULL) +
-        scale_x_continuous(breaks = scales::pretty_breaks()) + scale_y_continuous(labels = comma) +
-        labs(
-          subtitle = paste0(scope_label, " (2023-24 single-year data -- no forecast model, no sector benchmark for this source)"),
-          x = NULL, y = paste0("Emissions (tCO2e, ", scope_label, ")")
-        ) +
-        theme_minimal(base_size = 13) + theme(plot.subtitle = element_text(color = "grey40", size = 10.5))
+      series_colors <- c(
+        "Industry emissions" = "#4A6274", "Industry emissions (forecast)" = "#A9BCC9",
+        "Emissions" = "#C0392B", "Emissions (forecast)" = "#E59A8F",
+        "Your stated goal" = "#8E44AD", "SBTi-calculated goal" = "#27AE60", "Industry-calculated goal" = "#F39C12"
+      )
+      series_linetypes <- c(
+        "Industry emissions" = "solid", "Industry emissions (forecast)" = "dashed",
+        "Emissions" = "solid", "Emissions (forecast)" = "dashed",
+        "Your stated goal" = "solid", "SBTi-calculated goal" = "twodash", "Industry-calculated goal" = "solid"
+      )
+      series_linewidths <- c(
+        "Industry emissions" = 0.8, "Industry emissions (forecast)" = 0.8,
+        "Emissions" = 1.9, "Emissions (forecast)" = 1.9,
+        "Your stated goal" = 1.0, "SBTi-calculated goal" = 1.0, "Industry-calculated goal" = 1.0
+      )
+      anchor_series <- c("Industry emissions", "Emissions", "Your stated goal",
+                          "SBTi-calculated goal", "Industry-calculated goal")
+
+      observed_last_year <- if (nrow(point_df) > 0) suppressWarnings(max(point_df$year, na.rm = TRUE)) else NA_real_
+      plot_max_year <- suppressWarnings(max(plot_df$year, na.rm = TRUE))
+      show_today_marker <- is.finite(observed_last_year) && is.finite(plot_max_year) && plot_max_year > observed_last_year
+
+      gap_note <- ""
+      goal_years  <- plot_df$year[plot_df$series == "Your stated goal" & !is.na(plot_df$value)]
+      emiss_years <- plot_df$year[plot_df$series %in% c("Emissions", "Emissions (forecast)") & !is.na(plot_df$value)]
+      common_year <- suppressWarnings(max(intersect(goal_years, emiss_years), na.rm = TRUE))
+      if (is.finite(common_year)) {
+        goal_val  <- plot_df$value[plot_df$series == "Your stated goal" & plot_df$year == common_year][1]
+        emiss_val <- plot_df$value[plot_df$series %in% c("Emissions", "Emissions (forecast)") & plot_df$year == common_year][1]
+        if (!is.na(goal_val) && !is.na(emiss_val)) {
+          gap <- emiss_val - goal_val
+          gap_note <- paste0(
+            " -- ", if (gap > 0) "gap to goal in " else "ahead of goal in ", common_year,
+            ": ", comma(round(abs(gap))), " t"
+          )
+        }
+      }
+
+      label_df <- plot_df %>% filter(!is.na(value), series %in% anchor_series) %>% group_by(series) %>% filter(year == max(year)) %>% ungroup()
+      circle_df <- plot_df %>% filter(series == "Your stated goal")
+
+      base_subtitle <- paste0(
+        m$sector[1], " -- ", scope_label,
+        if (!has_forecast_line) " (no forecast model for this scope -- Industry benchmark forecast, where shown, is the sector's last observed value held flat)" else ""
+      )
+
+      p <- ggplot(plot_df, aes(x = year, y = value, color = series, linetype = series, linewidth = series, group = series)) +
+        { if (show_today_marker) annotate("rect", xmin = observed_last_year, xmax = Inf, ymin = -Inf, ymax = Inf, fill = "grey50", alpha = 0.035) } +
+        { if (show_today_marker) geom_vline(xintercept = observed_last_year, color = "grey60", linewidth = 0.5, linetype = "22") } +
+        { if (show_today_marker) {
+            annotate("text", x = observed_last_year, y = Inf, label = "Today",
+                     vjust = 1.6, hjust = -0.15, size = 3.1, color = "grey45", fontface = "italic")
+          } } +
+        { if (nrow(forecast_band_df) > 0) {
+            geom_ribbon(data = forecast_band_df, aes(x = year, ymin = ymin, ymax = ymax),
+                        inherit.aes = FALSE, fill = "#C0392B", alpha = 0.15)
+          } } +
+        geom_line() +
+        geom_point(data = circle_df, shape = 21, fill = "white", stroke = 1.1, size = 2.1) +
+        geom_point(data = point_df, size = 1.8) +
+        scale_color_manual(values = series_colors, breaks = anchor_series, name = NULL) +
+        scale_linetype_manual(values = series_linetypes, breaks = anchor_series, name = NULL) +
+        scale_linewidth_manual(values = series_linewidths, breaks = anchor_series, name = NULL) +
+        scale_x_continuous(breaks = scales::pretty_breaks(), expand = expansion(mult = c(0.02, if (has_ggrepel) 0.22 else 0.02))) +
+        scale_y_continuous(labels = comma) +
+        labs(subtitle = paste0(base_subtitle, gap_note), x = NULL, y = paste0("Emissions (tCO2e, ", scope_label, ")")) +
+        trend_chart_theme(base_size = 13, show_legend = !has_ggrepel)
+
+      if (has_ggrepel) {
+        p <- p + ggrepel::geom_text_repel(
+          data = label_df, aes(label = series), hjust = 0, direction = "y",
+          nudge_x = (plot_max_year - min(plot_df$year, na.rm = TRUE)) * 0.03 + 0.6,
+          xlim = c(plot_max_year, NA), segment.size = 0.3, segment.color = "grey70",
+          size = 3.3, fontface = "bold", show.legend = FALSE, seed = 42, box.padding = 0.25
+        )
+      }
+
+      p
     }
 
-    australia_rcp_build_table <- function(hist_df) {
+    australia_rcp_build_table <- function(hist_df, include_forecast) {
       req(!is.null(hist_df), nrow(hist_df) > 0)
-      hist_df %>% transmute(Year = year, Observed = round(emissions)) %>%
+      hist_tbl <- hist_df %>% transmute(year, value = round(emissions), series = "Observed")
+      fore_tbl <- tibble()
+      if (include_forecast) {
+        fore_df <- tryCatch(australia_rcp_forecast(), error = function(e) tibble())
+        if (nrow(fore_df) > 0) fore_tbl <- fore_df %>% transmute(year, value = round(p50), series = "Forecast")
+      }
+      bind_rows(hist_tbl, fore_tbl) %>%
+        pivot_wider(names_from = series, values_from = value) %>%
+        arrange(year) %>%
         datatable(options = list(pageLength = 15, dom = "tp"), rownames = FALSE)
     }
 
     output$australia_rcp_trend_plot_s1 <- renderPlot({
-      australia_rcp_calc_trigger()
-      isolate({ australia_rcp_build_plot(1, "Scope 1", australia_rcp_company_hist_s1()) })
+      
+        m <- australia_rcp_meta()
+        australia_rcp_build_plot(1, "Scope 1", australia_rcp_company_hist_s1(), has_forecast_line = !is.na(m$company_id[1]))
+      
     })
     output$australia_rcp_table_s1 <- renderDT({
-      australia_rcp_calc_trigger()
-      isolate({ australia_rcp_build_table(australia_rcp_company_hist_s1()) })
+      
+        m <- australia_rcp_meta()
+        australia_rcp_build_table(australia_rcp_company_hist_s1(), include_forecast = !is.na(m$company_id[1]))
+      
     })
     output$australia_rcp_trend_plot_s2 <- renderPlot({
-      australia_rcp_calc_trigger()
-      isolate({ australia_rcp_build_plot(2, "Scope 2", australia_rcp_company_hist_s2()) })
+       australia_rcp_build_plot(2, "Scope 2", australia_rcp_company_hist_s2(), has_forecast_line = FALSE) 
     })
     output$australia_rcp_table_s2 <- renderDT({
-      australia_rcp_calc_trigger()
-      isolate({ australia_rcp_build_table(australia_rcp_company_hist_s2()) })
+       australia_rcp_build_table(australia_rcp_company_hist_s2(), include_forecast = FALSE) 
     })
     output$australia_rcp_trend_plot_s3 <- renderPlot({
-      australia_rcp_calc_trigger()
-      isolate({ australia_rcp_build_plot(3, "Scope 3", australia_rcp_company_hist_s3()) })
+       australia_rcp_build_plot(3, "Scope 3", australia_rcp_company_hist_s3(), has_forecast_line = FALSE) 
     })
     output$australia_rcp_table_s3 <- renderDT({
-      australia_rcp_calc_trigger()
-      isolate({ australia_rcp_build_table(australia_rcp_company_hist_s3()) })
+       australia_rcp_build_table(australia_rcp_company_hist_s3(), include_forecast = FALSE) 
     })
 
-    # Level/gap bars -- NO industry_col at all (NULL), unlike Africa's
-    # equivalent -- there is no industry-calculated target to show.
+    # Level/gap bars -- industry_col now populated for Scope 1/2 (from
+    # the GICS sector benchmark); stays NA for Scope 3 since NGER never
+    # reports it for any real company, so no sector median exists
+    # there. Same pattern as africa_rcp_scope_gap_df().
     australia_rcp_scope_gap_df <- function(scope_num) {
       hist_fn <- switch(as.character(scope_num),
                          "1" = australia_rcp_company_hist_s1, "2" = australia_rcp_company_hist_s2, "3" = australia_rcp_company_hist_s3)
@@ -9529,7 +12323,16 @@ server <- function(input, output, session) {
       target_year <- input$australia_rcp_target_year
       req(!is.null(target_year), target_year > base_year)
 
-      forecast_df <- tibble(year = base_year:target_year, forecast = base_val)
+      if (scope_num == 1) {
+        fc <- tryCatch(australia_rcp_forecast(), error = function(e) tibble())
+        if (nrow(fc) > 0) {
+          forecast_df <- fc %>% transmute(year, forecast = p50)
+        } else {
+          forecast_df <- tibble(year = base_year:target_year, forecast = base_val)
+        }
+      } else {
+        forecast_df <- tibble(year = base_year:target_year, forecast = base_val)
+      }
 
       target_years <- base_year:target_year
       target_vals <- base_val * (1 - input$australia_rcp_target_reduction / 100) ^ ((target_years - base_year) / (target_year - base_year))
@@ -9541,6 +12344,19 @@ server <- function(input, output, session) {
       names(df)[names(df) == "forecast"] <- paste0("scope", scope_num, "_forecast")
       names(df)[names(df) == "own"]      <- paste0("scope", scope_num, "_target_own")
       names(df)[names(df) == "sbti"]     <- paste0("scope", scope_num, "_target_sbti")
+
+      industry_result <- if (scope_num %in% c(1, 2)) {
+        tryCatch(australia_rcp_industry_sbti_result(), error = function(e) list(error = conditionMessage(e)))
+      } else {
+        list(error = "no Scope 3 industry benchmark exists for this source")
+      }
+      if (is.null(industry_result$error) && !is.null(industry_result$path) && sbti_col_name %in% names(industry_result$path)) {
+        industry_df <- industry_result$path %>% transmute(year, industry = .data[[sbti_col_name]])
+        df <- df %>% left_join(industry_df, by = "year")
+        names(df)[names(df) == "industry"] <- paste0("scope", scope_num, "_target_industry")
+      } else {
+        df[[paste0("scope", scope_num, "_target_industry")]] <- NA_real_
+      }
       df
     }
 
@@ -9551,28 +12367,28 @@ server <- function(input, output, session) {
                                 "1" = australia_rcp_company_hist_s1, "2" = australia_rcp_company_hist_s2, "3" = australia_rcp_company_hist_s3)
 
         output[[paste0("australia_rcp_level_bar_s", scope_n)]] <- renderPlot({
-          australia_rcp_calc_trigger()
-          isolate({
+          
             df <- tryCatch(australia_rcp_scope_gap_df(scope_n), error = function(e) NULL)
             req(!is.null(df), nrow(df) > 0)
             make_scope_level_bar_plot(
               df, paste0("scope", scope_n, "_forecast"), paste0("scope", scope_n, "_target_own"),
-              paste0("scope", scope_n, "_target_sbti"), industry_col = NULL, real_data = real_data_fn()
+              paste0("scope", scope_n, "_target_sbti"), industry_col = paste0("scope", scope_n, "_target_industry"),
+              real_data = real_data_fn()
             )
-          })
+          
         })
 
         output[[paste0("australia_rcp_gap_bar_s", scope_n)]] <- renderPlot({
-          australia_rcp_calc_trigger()
-          isolate({
+          
             df <- tryCatch(australia_rcp_scope_gap_df(scope_n), error = function(e) NULL)
             req(!is.null(df), nrow(df) > 0)
             df <- df %>% mutate(
               gap_own  = .data[[paste0("scope", scope_n, "_forecast")]] - .data[[paste0("scope", scope_n, "_target_own")]],
-              gap_sbti = .data[[paste0("scope", scope_n, "_forecast")]] - .data[[paste0("scope", scope_n, "_target_sbti")]]
+              gap_sbti = .data[[paste0("scope", scope_n, "_forecast")]] - .data[[paste0("scope", scope_n, "_target_sbti")]],
+              gap_industry = .data[[paste0("scope", scope_n, "_forecast")]] - .data[[paste0("scope", scope_n, "_target_industry")]]
             )
-            make_scope_gap_pair_plot(df, "gap_own", "gap_sbti", industry_col = NULL)
-          })
+            make_scope_gap_pair_plot(df, "gap_own", "gap_sbti", industry_col = "gap_industry")
+          
         })
       })
     }
@@ -9587,7 +12403,12 @@ server <- function(input, output, session) {
   # its own sector).
   if (has_chile_data) {
 
-    chile_rcp_calc_trigger <- eventReactive(input$chile_rcp_calculate, { Sys.time() }, ignoreNULL = FALSE)
+    init_server_side_company_picker(session, "chile_rcp", chile_company_choices, "chile_rcp_existing_picker")
+    updateSelectizeInput(session, "latam_pm_gap_company", choices = c("Type to search..." = "", chile_company_choices),
+                          selected = character(0), server = TRUE)
+    wire_single_match_company(input, session, "chile_rcp", "chile_rcp_existing_picker", "chile_rcp_new_name",
+                               choices_fn = function() chile_company_choices)
+
 
     chile_rcp_selected_id <- reactive({
       if (identical(input$chile_rcp_mode, "existing")) {
@@ -9608,6 +12429,25 @@ server <- function(input, output, session) {
         tibble(company_id = NA_character_, company_name = trimws(input$chile_rcp_new_name),
                country = "Chile", sector = input$chile_rcp_sector)
       }
+    })
+
+    # Sidebar header -- same read-only pattern as the US/EU Company
+    # Profile tabs (company name + sector + location), replacing the
+    # visible Company/Sector controls hidden above.
+    output$chile_rcp_profile_header <- renderUI({
+      m <- tryCatch(chile_rcp_meta(), error = function(e) NULL)
+      company <- if (!is.null(m) && nrow(m) > 0 && nzchar(trimws(m$company_name[1]))) m$company_name[1] else "New company"
+      sector  <- if (!is.null(m) && nrow(m) > 0) m$sector[1] else NULL
+      country <- if (!is.null(m) && nrow(m) > 0) m$country[1] else NULL
+      tags$div(
+        style = "margin-bottom:2px;",
+        tags$h4(style = "margin:0 0 4px 0; font-weight:700; color:#FFFFFF; font-size:16px; line-height:1.3;", company),
+        tags$div(
+          style = "font-size:12px; color:#EAF6F9; line-height:1.5;",
+          if (!is.null(sector)) sector else "Sector not set",
+          if (!is.null(country)) tags$span(" -- ", country) else NULL
+        )
+      )
     })
 
     chile_rcp_hist_for <- function(scope_col, csv_input_id) {
@@ -9774,8 +12614,7 @@ server <- function(input, output, session) {
     })
 
     output$chile_rcp_sbti_plot <- renderPlot({
-      chile_rcp_calc_trigger()
-      isolate({
+      
         result <- tryCatch(chile_rcp_sbti_result(), error = function(e) list(error = conditionMessage(e)))
         req(is.null(result$error))
         df <- result$path
@@ -9795,12 +12634,11 @@ server <- function(input, output, session) {
             x = NULL, y = "Emissions (tCO2e)"
           ) +
           theme_minimal(base_size = 14) + theme(plot.subtitle = element_text(color = "grey40", size = 11), legend.position = "bottom")
-      })
+      
     })
 
     output$chile_rcp_sbti_table <- renderDT({
-      chile_rcp_calc_trigger()
-      isolate({
+      
         result <- tryCatch(chile_rcp_sbti_result(), error = function(e) list(error = conditionMessage(e)))
         if (!is.null(result$error)) return(datatable(data.frame(Error = result$error), rownames = FALSE, options = list(dom = "t")))
         df <- result$path %>% mutate(across(-year, ~round(.x)))
@@ -9810,25 +12648,29 @@ server <- function(input, output, session) {
         if ("scope3_emissions" %in% names(df)) colnames_display <- c(colnames_display, "Scope 3 (tCO2e)")
         colnames_display <- c(colnames_display, "Total (tCO2e)")
         datatable(df, rownames = FALSE, options = list(pageLength = 20, dom = "tp"), colnames = colnames_display)
-      })
+      
     })
 
     # Trend plot -- has a real forecast for Scope 1 (unlike Africa/
     # Australia), but no Industry benchmark/Target series (unlike
     # Asia/Africa) -- this company's own data, its forecast (Scope 1
-    # only), its stated goal, and its SBTi-calculated goal.
+    # only), its stated goal, and its SBTi-calculated goal. Rebuilt to
+    # match the US/EU Company Profile trend chart exactly (per direct
+    # request to keep this tab as consistent as possible with the US
+    # case): same series names/palette, the shaded +/-10% forecast band,
+    # the "Today" divider, the gap-to-goal subtitle callout, and the
+    # shared modern theme.
     chile_rcp_build_plot <- function(scope_num, scope_label, hist_df, has_forecast_line) {
       req(!is.null(hist_df), nrow(hist_df) > 0)
-      col <- "#2980B9"
       series_list <- list()
-      series_list[["Your emissions (observed)"]] <- hist_df %>% transmute(year, value = emissions)
+      series_list[["Emissions"]] <- hist_df %>% transmute(year, value = emissions)
 
       if (has_forecast_line) {
         fore_df <- tryCatch(chile_rcp_forecast(), error = function(e) tibble())
         if (nrow(fore_df) > 0) {
           bridge <- bind_rows(hist_df %>% filter(year == max(year)) %>% transmute(year, value = emissions),
                                fore_df %>% transmute(year, value = p50))
-          series_list[["Your forecast"]] <- bridge
+          series_list[["Emissions (forecast)"]] <- bridge
         }
       }
 
@@ -9848,27 +12690,90 @@ server <- function(input, output, session) {
 
       plot_df <- bind_rows(lapply(names(series_list), function(nm) series_list[[nm]] %>% mutate(series = nm))) %>%
         mutate(series = factor(series, levels = names(series_list)))
-      point_df <- plot_df %>% filter(series == "Your emissions (observed)")
+      point_df <- plot_df %>% filter(series == "Emissions")
 
-      series_colors <- c("Your emissions (observed)" = col, "Your forecast" = col,
-                          "Your stated goal" = target_color, "SBTi-calculated goal" = "#8E44AD")
-      series_linetypes <- c("Your emissions (observed)" = "solid", "Your forecast" = "dashed",
-                             "Your stated goal" = "dotted", "SBTi-calculated goal" = "dashed")
+      # Shaded +/-10% uncertainty band around the forecasted segment --
+      # same treatment as the US/EU Company Profile trend charts.
+      forecast_band_df <- plot_df %>% filter(series == "Emissions (forecast)", !is.na(value)) %>%
+        mutate(ymin = value * 0.9, ymax = value * 1.1)
 
-      subtitle <- if (has_forecast_line) {
-        paste0(scope_label, " -- solid = observed, dashed blue = simple linear forecast (not a mixed model), dashed purple = SBTi")
-      } else {
-        paste0(scope_label, " -- no forecast model for this scope")
+      series_colors <- c(
+        "Emissions" = "#C0392B", "Emissions (forecast)" = "#E59A8F",
+        "Your stated goal" = "#8E44AD", "SBTi-calculated goal" = "#27AE60"
+      )
+      series_linetypes <- c(
+        "Emissions" = "solid", "Emissions (forecast)" = "dashed",
+        "Your stated goal" = "solid", "SBTi-calculated goal" = "twodash"
+      )
+      series_linewidths <- c(
+        "Emissions" = 1.9, "Emissions (forecast)" = 1.9,
+        "Your stated goal" = 1.0, "SBTi-calculated goal" = 1.0
+      )
+      anchor_series <- c("Emissions", "Your stated goal", "SBTi-calculated goal")
+
+      observed_last_year <- if (nrow(point_df) > 0) suppressWarnings(max(point_df$year, na.rm = TRUE)) else NA_real_
+      plot_max_year <- suppressWarnings(max(plot_df$year, na.rm = TRUE))
+      show_today_marker <- is.finite(observed_last_year) && is.finite(plot_max_year) && plot_max_year > observed_last_year
+
+      # "SO WHAT" CALLOUT -- matches the US/EU chart: states the actual
+      # gap between where emissions are headed and the goal line.
+      gap_note <- ""
+      goal_years  <- plot_df$year[plot_df$series == "Your stated goal" & !is.na(plot_df$value)]
+      emiss_years <- plot_df$year[plot_df$series %in% c("Emissions", "Emissions (forecast)") & !is.na(plot_df$value)]
+      common_year <- suppressWarnings(max(intersect(goal_years, emiss_years), na.rm = TRUE))
+      if (is.finite(common_year)) {
+        goal_val  <- plot_df$value[plot_df$series == "Your stated goal" & plot_df$year == common_year][1]
+        emiss_val <- plot_df$value[plot_df$series %in% c("Emissions", "Emissions (forecast)") & plot_df$year == common_year][1]
+        if (!is.na(goal_val) && !is.na(emiss_val)) {
+          gap <- emiss_val - goal_val
+          gap_note <- paste0(
+            " -- ", if (gap > 0) "gap to goal in " else "ahead of goal in ", common_year,
+            ": ", comma(round(abs(gap))), " t"
+          )
+        }
       }
 
-      ggplot(plot_df, aes(x = year, y = value, color = series, linetype = series, group = series)) +
-        geom_line(linewidth = 1.1) +
-        geom_point(data = point_df, aes(x = year, y = value, color = series), inherit.aes = FALSE, size = 2.2) +
-        scale_color_manual(values = series_colors, name = NULL) +
-        scale_linetype_manual(values = series_linetypes, name = NULL) +
-        scale_x_continuous(breaks = scales::pretty_breaks()) + scale_y_continuous(labels = comma) +
-        labs(subtitle = subtitle, x = NULL, y = paste0("Emissions (tCO2e, ", scope_label, ")")) +
-        theme_minimal(base_size = 13) + theme(plot.subtitle = element_text(color = "grey40", size = 10.5))
+      label_df <- plot_df %>% filter(!is.na(value), series %in% anchor_series) %>% group_by(series) %>% filter(year == max(year)) %>% ungroup()
+      circle_df <- plot_df %>% filter(series == "Your stated goal")
+
+      base_subtitle <- if (has_forecast_line) {
+        "Dashed = forecast (simple per-company linear trend, not a mixed model)"
+      } else {
+        paste0("No forecast model for ", scope_label)
+      }
+
+      p <- ggplot(plot_df, aes(x = year, y = value, color = series, linetype = series, linewidth = series, group = series)) +
+        { if (show_today_marker) annotate("rect", xmin = observed_last_year, xmax = Inf, ymin = -Inf, ymax = Inf, fill = "grey50", alpha = 0.035) } +
+        { if (show_today_marker) geom_vline(xintercept = observed_last_year, color = "grey60", linewidth = 0.5, linetype = "22") } +
+        { if (show_today_marker) {
+            annotate("text", x = observed_last_year, y = Inf, label = "Today",
+                     vjust = 1.6, hjust = -0.15, size = 3.1, color = "grey45", fontface = "italic")
+          } } +
+        { if (nrow(forecast_band_df) > 0) {
+            geom_ribbon(data = forecast_band_df, aes(x = year, ymin = ymin, ymax = ymax),
+                        inherit.aes = FALSE, fill = "#C0392B", alpha = 0.15)
+          } } +
+        geom_line() +
+        geom_point(data = circle_df, shape = 21, fill = "white", stroke = 1.1, size = 2.1) +
+        geom_point(data = point_df, size = 1.8) +
+        scale_color_manual(values = series_colors, breaks = anchor_series, name = NULL) +
+        scale_linetype_manual(values = series_linetypes, breaks = anchor_series, name = NULL) +
+        scale_linewidth_manual(values = series_linewidths, breaks = anchor_series, name = NULL) +
+        scale_x_continuous(breaks = scales::pretty_breaks(), expand = expansion(mult = c(0.02, if (has_ggrepel) 0.22 else 0.02))) +
+        scale_y_continuous(labels = comma) +
+        labs(subtitle = paste0(base_subtitle, gap_note), x = NULL, y = paste0("Emissions (tCO2e, ", scope_label, ")")) +
+        trend_chart_theme(base_size = 13, show_legend = !has_ggrepel)
+
+      if (has_ggrepel) {
+        p <- p + ggrepel::geom_text_repel(
+          data = label_df, aes(label = series), hjust = 0, direction = "y",
+          nudge_x = (plot_max_year - min(plot_df$year, na.rm = TRUE)) * 0.03 + 0.6,
+          xlim = c(plot_max_year, NA), segment.size = 0.3, segment.color = "grey70",
+          size = 3.3, fontface = "bold", show.legend = FALSE, seed = 42, box.padding = 0.25
+        )
+      }
+
+      p
     }
 
     chile_rcp_build_table <- function(hist_df, include_forecast) {
@@ -9886,34 +12791,28 @@ server <- function(input, output, session) {
     }
 
     output$chile_rcp_trend_plot_s1 <- renderPlot({
-      chile_rcp_calc_trigger()
-      isolate({
+      
         m <- chile_rcp_meta()
         chile_rcp_build_plot(1, "Scope 1", chile_rcp_company_hist_s1(), has_forecast_line = !is.na(m$company_id[1]))
-      })
+      
     })
     output$chile_rcp_table_s1 <- renderDT({
-      chile_rcp_calc_trigger()
-      isolate({
+      
         m <- chile_rcp_meta()
         chile_rcp_build_table(chile_rcp_company_hist_s1(), include_forecast = !is.na(m$company_id[1]))
-      })
+      
     })
     output$chile_rcp_trend_plot_s2 <- renderPlot({
-      chile_rcp_calc_trigger()
-      isolate({ chile_rcp_build_plot(2, "Scope 2", chile_rcp_company_hist_s2(), has_forecast_line = FALSE) })
+       chile_rcp_build_plot(2, "Scope 2", chile_rcp_company_hist_s2(), has_forecast_line = FALSE) 
     })
     output$chile_rcp_table_s2 <- renderDT({
-      chile_rcp_calc_trigger()
-      isolate({ chile_rcp_build_table(chile_rcp_company_hist_s2(), include_forecast = FALSE) })
+       chile_rcp_build_table(chile_rcp_company_hist_s2(), include_forecast = FALSE) 
     })
     output$chile_rcp_trend_plot_s3 <- renderPlot({
-      chile_rcp_calc_trigger()
-      isolate({ chile_rcp_build_plot(3, "Scope 3", chile_rcp_company_hist_s3(), has_forecast_line = FALSE) })
+       chile_rcp_build_plot(3, "Scope 3", chile_rcp_company_hist_s3(), has_forecast_line = FALSE) 
     })
     output$chile_rcp_table_s3 <- renderDT({
-      chile_rcp_calc_trigger()
-      isolate({ chile_rcp_build_table(chile_rcp_company_hist_s3(), include_forecast = FALSE) })
+       chile_rcp_build_table(chile_rcp_company_hist_s3(), include_forecast = FALSE) 
     })
 
     # Level/gap bars -- no industry_col (NULL), same reasoning as
@@ -9960,20 +12859,18 @@ server <- function(input, output, session) {
                                 "1" = chile_rcp_company_hist_s1, "2" = chile_rcp_company_hist_s2, "3" = chile_rcp_company_hist_s3)
 
         output[[paste0("chile_rcp_level_bar_s", scope_n)]] <- renderPlot({
-          chile_rcp_calc_trigger()
-          isolate({
+          
             df <- tryCatch(chile_rcp_scope_gap_df(scope_n), error = function(e) NULL)
             req(!is.null(df), nrow(df) > 0)
             make_scope_level_bar_plot(
               df, paste0("scope", scope_n, "_forecast"), paste0("scope", scope_n, "_target_own"),
               paste0("scope", scope_n, "_target_sbti"), industry_col = NULL, real_data = real_data_fn()
             )
-          })
+          
         })
 
         output[[paste0("chile_rcp_gap_bar_s", scope_n)]] <- renderPlot({
-          chile_rcp_calc_trigger()
-          isolate({
+          
             df <- tryCatch(chile_rcp_scope_gap_df(scope_n), error = function(e) NULL)
             req(!is.null(df), nrow(df) > 0)
             df <- df %>% mutate(
@@ -9981,7 +12878,7 @@ server <- function(input, output, session) {
               gap_sbti = .data[[paste0("scope", scope_n, "_forecast")]] - .data[[paste0("scope", scope_n, "_target_sbti")]]
             )
             make_scope_gap_pair_plot(df, "gap_own", "gap_sbti", industry_col = NULL)
-          })
+          
         })
       })
     }
@@ -11183,8 +14080,9 @@ server <- function(input, output, session) {
   # Target line, in place of the company's own emissions.
   intake_benchmark_full_series <- reactive({
     req(input$intake_sector)
-    bm <- intake_sector_benchmark() %>% transmute(year, value = avg_emissions)
-    fc <- intake_sector_forecast_benchmark() %>% transmute(year, value = avg_p50)
+    n_fac <- intake_benchmark_n_fac()
+    bm <- intake_sector_benchmark() %>% transmute(year, value = avg_emissions * n_fac)
+    fc <- intake_sector_forecast_benchmark() %>% transmute(year, value = avg_p50 * n_fac)
     bind_rows(bm, fc) %>% arrange(year) %>% distinct(year, .keep_all = TRUE)
   })
 
@@ -11403,7 +14301,14 @@ server <- function(input, output, session) {
   # key match. Tier 2 (fallback): a direct substring search against real
   # facility names themselves, which catches this and similar naming
   # mismatches. Returns NULL for a genuine new company either way.
-  intake_matched_facilities <- reactive({
+  # Every real facility under the matched company -- the FULL set,
+  # never narrowed by the company-vs-facility analysis-level choice
+  # below. This is what the "Facilities" tab's own browse-any-facility
+  # drill-down (intake_facilities_content / intake_company_rollup_plot)
+  # reads, and what populates the intake_facility_pick choices -- both
+  # need to keep seeing every facility regardless of which one (if any)
+  # the user has picked to analyze.
+  intake_matched_facilities_all <- reactive({
     nm <- trimws(input$intake_company_name)
     req(nzchar(nm))
     key <- extract_company(nm)
@@ -11417,6 +14322,129 @@ server <- function(input, output, session) {
 
     if (nrow(fac) == 0) return(NULL)
     fac %>% arrange(desc(emissions_2023))
+  })
+
+  # The facility set actually driving the analysis -- narrowed to ONE
+  # row when the user has chosen "One specific facility" and picked
+  # one, otherwise identical to intake_matched_facilities_all(). Every
+  # existing downstream reactive (intake_company_match(),
+  # intake_user_data(), intake_benchmark_n_fac(), and the sector/state
+  # auto-sync below) reads THIS reactive, so switching analysis level
+  # cascades to the trend chart, the gap, and the Portfolio Mix/
+  # Curation Engine allocation without any of them needing to change.
+  intake_matched_facilities <- reactive({
+    fac <- intake_matched_facilities_all()
+    if (is.null(fac)) return(NULL)
+    if (identical(input$intake_analysis_level, "facility") &&
+        !is.null(input$intake_facility_pick) && nzchar(input$intake_facility_pick)) {
+      picked <- fac %>% filter(facility_id == input$intake_facility_pick)
+      if (nrow(picked) > 0) return(picked)
+    }
+    fac
+  })
+
+  output$intake_has_multi_facility_match <- reactive({
+    fac_all <- tryCatch(intake_matched_facilities_all(), error = function(e) NULL)
+    !is.null(fac_all) && nrow(fac_all) > 1
+  })
+  outputOptions(output, "intake_has_multi_facility_match", suspendWhenHidden = FALSE)
+
+  # Repopulates the facility picker (server-side selectize -- some
+  # matched companies run into the hundreds of facilities) and resets
+  # back to "whole company" every time the matched company itself
+  # changes, so a facility picked for the PREVIOUS company never
+  # silently carries over to a new one. EXCEPT when the Global
+  # Portfolio wizard itself already picked a specific facility for
+  # this exact company (wizard_pending_facility, set in the
+  # wizard_continue observer) -- that one pending pick is applied here
+  # instead of being reset, then cleared, so choosing a facility in
+  # the wizard carries through to the Company Profile tab without a
+  # second selection once you land there.
+  # BUGFIX: this used to trigger off intake_matched_facilities_all()
+  # ALONE -- fine for a genuinely new company, but testing the SAME
+  # company twice in a row through the wizard (once "Whole company",
+  # then again "One specific facility") left input$intake_company_name
+  # unchanged the second time, so intake_matched_facilities_all()
+  # never recomputed/invalidated and this observer silently never
+  # re-ran -- the second pending pick was set but never applied, so
+  # the tab kept showing the first run's "whole company" result. Now
+  # also keyed on wizard_pending_nonce(), which wizard_continue bumps
+  # on EVERY run regardless of content, so a second wizard pass on the
+  # SAME company always re-triggers this even when the matched
+  # facility set itself hasn't changed. (wizard_pending_facility() is
+  # deliberately NOT in this event list and is never reset to NULL
+  # here -- reactiveVals only invalidate on a real content change, so
+  # clearing it inside this same handler would make that very clear()
+  # immediately re-trigger the handler a second time, undoing the pick
+  # it had just applied. Reading it fresh each run and re-validating
+  # against the CURRENT fac_all below is enough to keep a stale value
+  # from an earlier, different company harmless.)
+  observeEvent(list(intake_matched_facilities_all(), wizard_pending_nonce()), {
+    fac_all <- intake_matched_facilities_all()
+    pending <- wizard_pending_facility()
+    if (is.null(fac_all) || nrow(fac_all) <= 1) {
+      updateSelectizeInput(session, "intake_facility_pick", choices = character(0), server = TRUE)
+      updateRadioButtons(session, "intake_analysis_level", selected = "company")
+    } else {
+      choices <- setNames(
+        fac_all$facility_id,
+        if (has_city_data) {
+          paste0(fac_all$facility_name, " -- ", fac_all$state, " (", comma(round(fac_all$emissions_2023)), " t, 2023)")
+        } else {
+          paste0(fac_all$facility_name, " (", comma(round(fac_all$emissions_2023)), " t, 2023)")
+        }
+      )
+      use_pending <- !is.null(pending) && identical(pending$level, "facility") &&
+        pending$facility_id %in% fac_all$facility_id
+      updateSelectizeInput(
+        session, "intake_facility_pick", choices = choices,
+        selected = if (use_pending) pending$facility_id else character(0), server = TRUE
+      )
+      updateRadioButtons(session, "intake_analysis_level", selected = if (use_pending) "facility" else "company")
+    }
+  }, ignoreNULL = FALSE)
+
+  # Shared by both the original company-match observer and the
+  # analysis-level switch below -- keeps Sector/State in sync with
+  # whichever facility set (whole company or one specific facility) is
+  # CURRENTLY active, instead of only ever reflecting the company as a
+  # whole.
+  intake_sync_sector_location <- function() {
+    fac <- tryCatch(intake_matched_facilities(), error = function(e) NULL)
+    if (is.null(fac) || nrow(fac) == 0) return(invisible(NULL))
+    dom_sector <- fac %>% count(primary_sector, wt = emissions_2023, sort = TRUE) %>% slice(1) %>% pull(primary_sector)
+    if (length(dom_sector) > 0 && dom_sector %in% sector_list) {
+      updateSelectInput(session, "intake_sector", label = "Sector", selected = dom_sector)
+    }
+    updateSelectInput(session, "intake_facility_country", selected = "United States")
+    if (has_city_data) {
+      fac_state <- fac$state[1]
+      if (!is.null(fac_state) && !is.na(fac_state) && fac_state %in% us_state_choices) {
+        updateSelectInput(session, "intake_facility_state", selected = fac_state)
+      }
+    }
+  }
+
+  observeEvent(list(input$intake_analysis_level, input$intake_facility_pick), {
+    intake_sync_sector_location()
+  }, ignoreInit = TRUE)
+
+  # SCALE FIX (shared): intake_sector_benchmark()/
+  # intake_sector_forecast_benchmark() are a per-FACILITY median, but
+  # "Your emissions" for a real matched company is the SUM across every
+  # one of its facilities -- comparing the two directly plots one
+  # company's total against one median single facility, which makes any
+  # real multi-facility company look enormous regardless of actual
+  # performance. Every series derived from the sector benchmark that
+  # gets shown alongside a company's own (summed) numbers -- the grey
+  # Industry benchmark line, the Industry-calculated goal (SBTi) line,
+  # and their bar-chart equivalents -- multiplies the median by this
+  # shared count so the comparison stays apples-to-apples. Falls back
+  # to 1 for a new/manual/unmatched company (a single set of pasted
+  # numbers has no separate facility count to scale by).
+  intake_benchmark_n_fac <- reactive({
+    fac <- tryCatch(intake_matched_facilities(), error = function(e) NULL)
+    if (is.null(fac) || nrow(fac) == 0) 1 else nrow(fac)
   })
 
   intake_company_match <- reactive({
@@ -11438,23 +14466,52 @@ server <- function(input, output, session) {
     m <- tryCatch(intake_company_match(), error = function(e) NULL)
     if (!is.null(m)) {
       updateRadioButtons(session, "intake_has_data", selected = "yes")
-      fac <- intake_matched_facilities()
-      if (nrow(fac) > 0) {
-        dom_sector <- fac %>% count(primary_sector, wt = emissions_2023, sort = TRUE) %>% slice(1) %>% pull(primary_sector)
-        if (length(dom_sector) > 0 && dom_sector %in% sector_list) {
-          updateSelectInput(session, "intake_sector", selected = dom_sector)
-        }
-        # A matched company is always a real GHGRP reporter -- always
-        # US-based, regardless of which specific state its facilities
-        # sit in.
-        updateSelectInput(session, "intake_facility_country", selected = "United States")
-        fac_state <- fac$state[1]
-        if (!is.null(fac_state) && !is.na(fac_state) && fac_state %in% us_state_choices) {
-          updateSelectInput(session, "intake_facility_state", selected = fac_state)
-        }
-      }
+      # Sector/State auto-sync itself lives in intake_sync_sector_location()
+      # (shared with the analysis-level switch below), and relabels
+      # "Closest matching sector" -> "Sector" for a real matched company
+      # since it's that company's/facility's actual sector, not a guess.
+      updateSelectInput(session, "intake_sector", label = "Sector")
+      intake_sync_sector_location()
+    } else {
+      # No match (new/unmatched company) -- restore the original
+      # "guess" wording, since here it genuinely is a fuzzy pick.
+      updateSelectInput(session, "intake_sector", label = "Closest matching sector")
     }
   }, ignoreInit = TRUE)
+
+  # Sidebar header (per direct request) -- replaces the editable Sector
+  # dropdown as the way company/sector/location is surfaced: company
+  # name as the title, best-matching sector and location (state, for a
+  # matched real company) underneath as plain read-only text.
+  output$intake_profile_header <- renderUI({
+    company <- if (!is.null(input$intake_company_name) && nzchar(trimws(input$intake_company_name))) {
+      trimws(input$intake_company_name)
+    } else {
+      "New Company"
+    }
+    sector <- if (!is.null(input$intake_sector) && nzchar(input$intake_sector)) input$intake_sector else NULL
+    state  <- if (!is.null(input$intake_facility_state) && nzchar(input$intake_facility_state)) input$intake_facility_state else NULL
+
+    # Colors here are hardcoded (not left to the .well CSS's white
+    # override) because this header needs to stay legible against the
+    # teal sidebar specifically -- white for the title, a light
+    # translucent-white tint for the sector/location line so it still
+    # reads as secondary without going invisible against the teal
+    # background. No border-bottom of its own (removed per direct
+    # request) -- the hr() immediately below it in the sidebar was
+    # producing two barely-separated lines right on top of each other;
+    # that hr() (already styled light via the .well hr rule above) is
+    # now the only separator.
+    tags$div(
+      style = "margin-bottom:2px;",
+      tags$h4(style = "margin:0 0 4px 0; font-weight:700; color:#FFFFFF; font-size:16px; line-height:1.3;", company),
+      tags$div(
+        style = "font-size:12px; color:#EAF6F9; line-height:1.5;",
+        if (!is.null(sector)) sector else "Sector not set",
+        if (!is.null(state)) tags$span(" — ", state) else NULL
+      )
+    )
+  })
 
   output$intake_match_status <- renderUI({
     m <- tryCatch(intake_company_match(), error = function(e) NULL)
@@ -11469,12 +14526,20 @@ server <- function(input, output, session) {
         NULL
       }
     } else {
-      fac <- intake_matched_facilities()
+      fac_all <- intake_matched_facilities_all()
+      at_facility <- identical(input$intake_analysis_level, "facility") &&
+        !is.null(input$intake_facility_pick) && nzchar(input$intake_facility_pick)
+      scope_note <- if (at_facility) {
+        picked_name <- fac_all$facility_name[fac_all$facility_id == input$intake_facility_pick][1]
+        paste0("Analyzing ONE facility only -- ", picked_name, ". Switch \"Analyze at the level of\" ",
+               "back to \"Whole company\" above to cover all ", nrow(fac_all), " again.")
+      } else {
+        "Historical Scope 1 emissions auto-populated below (see the \"Facilities\" tab for the per-facility breakdown)."
+      }
       tags$div(
         style = "background:#EAFAF1; border:1px solid #A9DFBF; border-radius:6px; padding:0.5rem 0.8rem; margin-bottom:10px; font-size:12px;",
-        tags$b("Matched: "), m$company[1], " -- real GHGRP data found for ", nrow(fac), " facilit",
-        if (nrow(fac) == 1) "y" else "ies", ". Historical Scope 1 emissions auto-populated below ",
-        "(see the \"Facilities\" tab for the per-facility breakdown)."
+        tags$b("Matched: "), m$company[1], " -- real GHGRP data found for ", nrow(fac_all), " facilit",
+        if (nrow(fac_all) == 1) "y" else "ies", ". ", scope_note
       )
     }
   })
@@ -11484,7 +14549,11 @@ server <- function(input, output, session) {
   # matched company's view, not a peer selection alongside it. Only
   # populated for a real matched company (Section above); a new/unmatched
   # company has no facility-level detail to show, since it isn't in the
-  # GHGRP database at all.
+  # GHGRP database at all. Deliberately reads intake_matched_facilities_all()
+  # (every real facility), NOT the analysis-level-narrowed
+  # intake_matched_facilities() -- this browse-any-facility drill-down
+  # should keep showing the whole company regardless of which single
+  # facility (if any) is currently driving the main analysis.
   output$intake_facilities_content <- renderUI({
     m <- tryCatch(intake_company_match(), error = function(e) NULL)
     if (is.null(m)) {
@@ -11494,21 +14563,28 @@ server <- function(input, output, session) {
         "appear here, nested beneath the company-level summary."
       )))
     }
-    fac <- intake_matched_facilities()
+    fac <- intake_matched_facilities_all()
     tagList(
-      h5(paste0(m$company[1], " -- company rollup (", nrow(fac), if (nrow(fac) == 1) " facility)" else " facilities)")),
-      plotOutput("intake_company_rollup_plot", height = "360px"),
-      hr(),
       h5("Individual facility detail"),
       selectInput(
         "intake_facility_drill", NULL,
         choices = setNames(fac$facility_id, fac$facility_name)
       ),
-      plotOutput("intake_facility_drill_plot", height = "360px"),
-      br(),
-      DTOutput("intake_facility_drill_table")
+      plotOutput("intake_facility_drill_plot", height = "360px")
+      # DTOutput("intake_facility_drill_table") removed per direct
+      # request -- output$intake_facility_drill_table itself is left
+      # defined below (unused, inert with no remaining DTOutput to
+      # render into) to keep the diff minimal.
     )
   })
+
+  # NOTE: the company-rollup summary (heading + plotOutput
+  # "intake_company_rollup_plot") that used to sit above this
+  # drill-down was removed per direct request -- the Facilities tab now
+  # shows only the individual-facility detail. output$intake_company_rollup_plot
+  # itself is left defined below (unused) rather than deleted, since
+  # removing a renderPlot with no remaining plotOutput reference is
+  # inert either way and keeping it minimizes the diff.
 
   output$intake_company_rollup_plot <- renderPlot({
     m <- tryCatch(intake_company_match(), error = function(e) NULL)
@@ -11738,6 +14814,8 @@ server <- function(input, output, session) {
   nci_derived_sbti <- reactive({
     has_data <- isTRUE(input$intake_has_data == "yes")
     ud <- if (has_data) intake_user_data() else NULL
+    m  <- tryCatch(intake_company_match(), error = function(e) NULL)
+    is_matched <- !is.null(m)
 
     if (!is.null(ud) && nrow(ud) > 0) {
       base_year <- min(ud$year); base_s1 <- ud$emissions[ud$year == base_year][1]
@@ -11750,29 +14828,47 @@ server <- function(input, output, session) {
     target_year <- if (has_data) input$intake_target_year else input$intake_target_year_nodata
     if (is.null(target_year) || is.na(target_year)) target_year <- 2030
 
+    # Scope 2/3 estimate fallback -- a matched GHGRP company (Scope-1-only
+    # reporting by design) or any company with no pasted Scope 2/3 data
+    # still gets its Scope 2/3 shown here, via the same Hertwich & Wood
+    # (2018) sector-ratio estimate already used on the trend chart
+    # (build_intake_trend_plot()/get_scope23_ratio()), instead of being
+    # silently reported as "not entered -- excluded".
+    ratio <- tryCatch(get_scope23_ratio(input$intake_sector), error = function(e) NULL)
+
     s2_data <- tryCatch(intake_user_data_s2(), error = function(e) NULL)
+    s2_is_estimate <- FALSE
     if (!is.null(s2_data) && nrow(s2_data) > 0) {
       base_s2 <- s2_data$emissions[s2_data$year == min(s2_data$year)][1]
       mry_s2  <- s2_data$emissions[s2_data$year == max(s2_data$year)][1]
+    } else if (!is.null(ratio) && !is.null(base_s1) && !is.null(mry_s1)) {
+      base_s2 <- base_s1 * ratio$scope2_multiplier
+      mry_s2  <- mry_s1  * ratio$scope2_multiplier
+      s2_is_estimate <- TRUE
     } else {
       base_s2 <- 0; mry_s2 <- 0
     }
 
     s3_data <- tryCatch(intake_user_data_s3(), error = function(e) NULL)
+    s3_is_estimate <- FALSE
     if (!is.null(s3_data) && nrow(s3_data) > 0) {
       base_year_s3 <- min(s3_data$year); base_s3 <- s3_data$emissions[s3_data$year == base_year_s3][1]
       mry_year_s3  <- max(s3_data$year); mry_s3  <- s3_data$emissions[s3_data$year == mry_year_s3][1]
+    } else if (!is.null(ratio) && !is.null(base_s1) && !is.null(mry_s1)) {
+      base_year_s3 <- base_year; base_s3 <- base_s1 * ratio$scope3_multiplier
+      mry_year_s3  <- mry_year;  mry_s3  <- mry_s1  * ratio$scope3_multiplier
+      s3_is_estimate <- TRUE
     } else {
       base_year_s3 <- base_year; base_s3 <- 0
       mry_year_s3  <- mry_year;  mry_s3  <- 0
     }
 
     list(
-      company_name = input$intake_company_name,
+      company_name = input$intake_company_name, is_matched = is_matched,
       base_year = base_year, base_s1 = base_s1, mry_year = mry_year, mry_s1 = mry_s1,
-      target_year = target_year, base_s2 = base_s2, mry_s2 = mry_s2,
+      target_year = target_year, base_s2 = base_s2, mry_s2 = mry_s2, s2_is_estimate = s2_is_estimate,
       base_year_s3 = base_year_s3, base_s3 = base_s3, mry_year_s3 = mry_year_s3, mry_s3 = mry_s3,
-      target_year_s3 = target_year
+      target_year_s3 = target_year, s3_is_estimate = s3_is_estimate
     )
   })
 
@@ -11808,7 +14904,7 @@ server <- function(input, output, session) {
 
     tags$div(
       style = "background:#FFFFFF; border:1px solid #D5D8DC; border-radius:6px; padding:0.6rem 0.9rem; font-size:12px;",
-      tags$b("Using from New Company Intake:"),
+      tags$b(if (isTRUE(d$is_matched)) "Using from matched GHGRP company:" else "Using from New Company Intake:"),
       tags$ul(
         style = "margin-bottom:0; padding-left:1.1rem;",
         tags$li("Company: ", if (!is.null(company_display)) company_display else tags$em("not set")),
@@ -11820,8 +14916,22 @@ server <- function(input, output, session) {
             tagList(tags$em("No Scope 1 data entered yet -- paste it on New Company Intake."))
           }
         ),
-        tags$li(if (s2_on) paste0("Scope 2: ", comma(round(d$base_s2)), " t \u2192 ", comma(round(d$mry_s2)), " t") else tags$em("Scope 2 not entered -- excluded")),
-        tags$li(if (s3_on) paste0("Scope 3: ", comma(round(d$base_s3)), " t (", d$base_year_s3, ") \u2192 ", comma(round(d$mry_s3)), " t (", d$mry_year_s3, ")") else tags$em("Scope 3 not entered -- excluded")),
+        tags$li(
+          if (s2_on) {
+            paste0("Scope 2: ", comma(round(d$base_s2)), " t \u2192 ", comma(round(d$mry_s2)), " t",
+                   if (isTRUE(d$s2_is_estimate)) " (v1 estimate: Hertwich & Wood 2018 sector ratio, not measured)" else "")
+          } else {
+            tags$em("Scope 2 not entered -- excluded")
+          }
+        ),
+        tags$li(
+          if (s3_on) {
+            paste0("Scope 3: ", comma(round(d$base_s3)), " t (", d$base_year_s3, ") \u2192 ", comma(round(d$mry_s3)), " t (", d$mry_year_s3, ")",
+                   if (isTRUE(d$s3_is_estimate)) " (v1 estimate: Hertwich & Wood 2018 sector ratio, not measured)" else "")
+          } else {
+            tags$em("Scope 3 not entered -- excluded")
+          }
+        ),
         tags$li("Target year: ", d$target_year)
       )
     )
@@ -11980,8 +15090,7 @@ server <- function(input, output, session) {
   })
 
   output$intake_s3_category_trend_plot <- renderPlot({
-    intake_calc_trigger()
-    isolate({
+    
       trend <- tryCatch(intake_scope3_category_trend(), error = function(e) NULL)
       req(!is.null(trend), nrow(trend) > 0)
 
@@ -12003,12 +15112,11 @@ server <- function(input, output, session) {
           plot.subtitle = element_text(color = "grey40", size = 11),
           legend.position = "right", legend.text = element_text(size = 9)
         )
-    })
+    
   })
 
   output$intake_s3_category_trend_table <- renderDT({
-    intake_calc_trigger()
-    isolate({
+    
       trend <- tryCatch(intake_scope3_category_trend(), error = function(e) NULL)
       req(!is.null(trend), nrow(trend) > 0)
 
@@ -12022,7 +15130,7 @@ server <- function(input, output, session) {
         options = list(pageLength = 15, dom = "t", scrollX = TRUE),
         colnames = c("Category #", "GHG Protocol Category", as.character(sort(unique(trend$year))))
       )
-    })
+    
   })
 
   # Plain reference table of the ratios themselves (not tied to any
@@ -12031,8 +15139,7 @@ server <- function(input, output, session) {
   # Sector-aware: shows real numbers for Chemicals, the honest equal-
   # split default (with that fact stated in its own column) elsewhere.
   output$intake_s3_ratio_table <- renderDT({
-    intake_calc_trigger()
-    isolate({
+    
       share_info <- get_scope3_category_shares(input$intake_sector)
       source_label <- if (share_info$match_type == "exact") {
         paste0("EXACT match: ", share_info$source)
@@ -12052,7 +15159,7 @@ server <- function(input, output, session) {
         options = list(pageLength = 15, dom = "t"),
         colnames = c("Category #", "GHG Protocol Category", "Share", "Basis")
       )
-    })
+    
   })
 
   # ---- DIAGNOSTIC (temporary) -- shows exactly what was parsed from the
@@ -12084,8 +15191,7 @@ server <- function(input, output, session) {
   })
 
   output$intake_s3_category_plot <- renderPlot({
-    intake_calc_trigger()
-    isolate({
+    
       result <- tryCatch(intake_scope3_breakdown(), error = function(e) NULL)
       req(!is.null(result))
       df <- result$data %>% mutate(cat_name = factor(cat_name, levels = rev(cat_name)))
@@ -12108,12 +15214,11 @@ server <- function(input, output, session) {
         ) +
         theme_minimal(base_size = 13) +
         theme(plot.subtitle = element_text(color = "grey40", size = 11), legend.position = "top")
-    })
+    
   })
 
   output$intake_s3_category_table <- renderDT({
-    intake_calc_trigger()
-    isolate({
+    
       result <- tryCatch(intake_scope3_breakdown(), error = function(e) NULL)
       req(!is.null(result))
       estimate_label <- switch(
@@ -12134,7 +15239,7 @@ server <- function(input, output, session) {
         options = list(pageLength = 15, dom = "t"),
         colnames = c("Category #", "GHG Protocol Category", "tCO2e", "% of Scope 3", "Source")
       )
-    })
+    
   })
 
   # Per-facility MEDIAN emissions for the sector, by year -- computed
@@ -12212,6 +15317,99 @@ server <- function(input, output, session) {
     if (nrow(fc) == 0) return(NULL)
 
     fc %>% transmute(year, p50 = baseline_value * (avg_p50 / bm_base))
+  })
+
+  # Keeps the hidden intake_use_sector_target boolean (the one
+  # intake_target_pathway() itself reads) in sync with the explicit
+  # Yes/No question above it. "no" (don't have an own target) -> TRUE
+  # (use the real sector-specific industry-standard target).
+  observeEvent(input$intake_has_own_target, {
+    updateCheckboxInput(session, "intake_use_sector_target",
+                          value = identical(input$intake_has_own_target, "no"))
+  }, ignoreNULL = FALSE)
+
+  # Makes the industry-standard fallback EXPLICIT (per direct request)
+  # instead of a silent default: shows exactly which real, sector-
+  # specific target_lookup row is being applied -- not a single generic
+  # number, but whatever that sector's own real disclosed-target data
+  # says -- and its source. If the matched sector has no target_lookup
+  # row at all, says so plainly instead of silently falling back to
+  # intake_target_pathway()'s own generic slider defaults.
+  output$intake_industry_target_note <- renderUI({
+    req(input$intake_sector)
+    tl <- target_lookup %>% filter(primary_sector == input$intake_sector)
+    if (nrow(tl) == 0) {
+      return(tags$div(
+        style = paste(
+          "background:rgba(255,255,255,0.96); border-left:3px solid #E67E22;",
+          "border-radius:3px; padding:0.55rem 0.85rem; margin-top:0.5rem;",
+          "box-shadow:0 1px 2px rgba(0,0,0,0.10);"
+        ),
+        tags$div(
+          style = paste(
+            "font-size:10px; font-weight:700; letter-spacing:0.06em;",
+            "text-transform:uppercase; color:#E67E22; margin-bottom:3px;"
+          ),
+          "No industry standard found"
+        ),
+        tags$div(
+          style = "font-size:12.5px; color:#273746; line-height:1.5;",
+          "Nothing in the industry data for “", input$intake_sector,
+          "” yet — switch to “Yes” above and set the company's own target instead."
+        )
+      ))
+    }
+    # "source_organization"/"caveat" %in% names(tl) first -- NOT just
+    # !is.null(tl$col) -- since $ on a column target_lookup.rds doesn't
+    # actually have throws the same "Unknown or uninitialised column"
+    # console warning the facility_lookup$state fix above addressed;
+    # checking names() first avoids ever touching the missing column.
+    src <- if ("source_organization" %in% names(tl) && !is.na(tl$source_organization[1]) && nzchar(tl$source_organization[1])) {
+      tl$source_organization[1]
+    } else {
+      "industry sources"
+    }
+    # A quieter, more elegant card than the flat grey (or the boxier blue
+    # fill tried after it): a near-white translucent panel that sits
+    # lightly on top of the teal sidebar, a thin left accent border (the
+    # app's teal brand color) instead of an all-around border, a small
+    # uppercase eyebrow label, and a soft drop shadow for a bit of lift.
+    # Every color is still hardcoded (not left to the .well CSS's
+    # white-text override), since a near-white card needs dark text
+    # regardless of what the surrounding sidebar does.
+    tags$div(
+      style = paste(
+        "background:rgba(255,255,255,0.96); border-left:3px solid #1B7F98;",
+        "border-radius:3px; padding:0.6rem 0.9rem; margin-top:0.5rem;",
+        "box-shadow:0 1px 2px rgba(0,0,0,0.10);"
+      ),
+      tags$div(
+        style = paste(
+          "font-size:10px; font-weight:700; letter-spacing:0.06em;",
+          "text-transform:uppercase; color:#1B7F98; margin-bottom:4px;"
+        ),
+        "Industry-standard target"
+      ),
+      tags$div(
+        style = "font-size:13px; color:#1C2833; line-height:1.5;",
+        tags$span(style = "font-weight:600; color:#1C2833;", input$intake_sector), tags$br(),
+        # color:#1C2833 pinned on every <b> here -- the sidebar's own CSS
+        # (.well b, .well strong { color:#FFFFFF; }) turns EVERY bold tag
+        # white, and that rule beats a <b> with no style of its own. On
+        # this near-white card that made the year/percentage invisible
+        # (white-on-white) -- the real bug behind "I don't like this box",
+        # not the color scheme. An inline style always outranks that
+        # class selector, so pinning color here is what actually fixes it.
+        "Target year ", tags$b(style = "color:#1C2833;", tl$target_year[1]), " · ",
+        tags$b(style = "color:#1C2833;", paste0(round(tl$reduction_fraction[1] * 100, 1), "%")),
+        " reduction from baseline"
+        # Source line and caveat line removed per direct request -- the
+        # box now shows only the sector, target year, and reduction
+        # figure. `src` is computed above only to stay available if a
+        # future request brings the citation back; it's no longer
+        # rendered here.
+      )
+    )
   })
 
   # Baseline + target pathway, using either the user's own data or,
@@ -12386,16 +15584,19 @@ server <- function(input, output, session) {
   # the button, and ONLY the button) and wraps everything else in
   # isolate() -- so changing a sector, pasting new data, or moving a
   # slider does NOT trigger a recompute; only clicking Calculate does.
-  intake_calc_trigger <- eventReactive(input$intake_calculate, { Sys.time() }, ignoreNULL = FALSE)
 
   build_intake_trend_plot <- function(scope_mult, sbti_col, scope_label, real_data_reactive = NULL, mode = "absolute") {
     req(input$intake_sector)
-    col <- sector_colors[[input$intake_sector]]
-    if (is.null(col) || is.na(col)) col <- "#34495E"
 
     bm   <- intake_sector_benchmark()
     path <- intake_target_pathway()
     has_data <- path$has_data[1]
+
+    # SCALE FIX -- see intake_benchmark_n_fac() for why: the sector
+    # benchmark is a per-facility median, "Your emissions" is a
+    # company-wide sum, so the benchmark is scaled up by this
+    # company's own facility count before the two are ever compared.
+    n_fac <- intake_benchmark_n_fac()
 
     # Real scope-specific data, if the user provided it -- takes
     # precedence over the ratio estimate entirely for "Your emissions".
@@ -12404,7 +15605,14 @@ server <- function(input, output, session) {
 
     series_list <- list()
 
-    series_list[["Industry benchmark (observed)"]] <- bm %>% transmute(year, value = avg_emissions * scope_mult)
+    # RENAMED (per direct request) -- "Industry average (observed)" /
+    # "Your emissions (observed)" simplified to "Industry emissions" /
+    # "Emissions". The "(forecast)" counterparts keep that suffix as
+    # their internal key only (needed to give them their own color/
+    # linetype entry below) -- they're excluded from both the
+    # end-of-line labels and the legend further down, since "dashed =
+    # forecast" is now stated once instead of repeated per line.
+    series_list[["Industry emissions"]] <- bm %>% transmute(year, value = avg_emissions * n_fac * scope_mult)
     if (isTRUE(input$intake_show_forecast)) {
       bm_last_year <- max(bm$year)
       bridge_bm_fore <- bind_rows(
@@ -12412,13 +15620,13 @@ server <- function(input, output, session) {
         intake_sector_forecast_benchmark() %>% filter(year > bm_last_year)
       )
       if (nrow(bridge_bm_fore) > 1) {
-        series_list[["Industry benchmark (forecast)"]] <- bridge_bm_fore %>% transmute(year, value = avg_p50 * scope_mult)
+        series_list[["Industry emissions (forecast)"]] <- bridge_bm_fore %>% transmute(year, value = avg_p50 * n_fac * scope_mult)
       }
     }
 
     if (using_real_data) {
       # Real data provided for this scope -- shown as-is, no rescaling.
-      series_list[["Your emissions (observed)"]] <- real_data %>% transmute(year, value = emissions)
+      series_list[["Emissions"]] <- real_data %>% transmute(year, value = emissions)
 
       if (isTRUE(input$intake_show_forecast)) {
         # Option B: anchor to this scope's own last real year, then extend
@@ -12428,11 +15636,11 @@ server <- function(input, output, session) {
         # exact same functions, so the gap chart can never diverge from
         # what's drawn here again.
         fwd_series <- compute_option_b_forecast(real_data, intake_s1_full_series())
-        if (!is.null(fwd_series)) series_list[["Your forecast"]] <- fwd_series
+        if (!is.null(fwd_series)) series_list[["Emissions (forecast)"]] <- fwd_series
       }
     } else if (has_data) {
       ud <- intake_user_data()
-      series_list[["Your emissions (observed)"]] <- ud %>% transmute(year, value = emissions * scope_mult)
+      series_list[["Emissions"]] <- ud %>% transmute(year, value = emissions * scope_mult)
 
       if (isTRUE(input$intake_show_forecast)) {
         uf <- intake_user_forecast()
@@ -12441,7 +15649,7 @@ server <- function(input, output, session) {
             ud %>% filter(year == max(year)) %>% transmute(year, p50 = emissions),
             uf
           )
-          series_list[["Your forecast"]] <- bridge_user_fore %>% transmute(year, value = p50 * scope_mult)
+          series_list[["Emissions (forecast)"]] <- bridge_user_fore %>% transmute(year, value = p50 * scope_mult)
         }
       }
     }
@@ -12505,27 +15713,59 @@ server <- function(input, output, session) {
         ungroup()
     }
 
-    point_df <- plot_df %>% filter(series %in% c("Industry benchmark (observed)", "Your emissions (observed)"))
+    point_df <- plot_df %>% filter(series %in% c("Industry emissions", "Emissions"))
 
+    # PALETTE FIX -- these MUST match make_scope_level_bar_plot()'s
+    # fill colors exactly (SBTi Target=#27AE60, Industry Target=#F39C12,
+    # Your Own Goal=#8E44AD, Your Emissions=#C0392B), since that bar
+    # chart sits directly below this trend chart on the same tab and
+    # plots the SAME series under the same names. They'd previously
+    # diverged (SBTi purple here vs. green there, "Your emissions"
+    # tied to the sector color here vs. a fixed red there) -- same
+    # concept, different colors on the same screen, which is exactly
+    # what made this chart read as unclear rather than a genuine
+    # visualization problem in the chart itself.
+    col <- "#C0392B"
+    # OBSERVED-VS-FORECAST FIX -- "Emissions"/"Emissions (forecast)" and
+    # the two "Industry emissions" lines previously shared one exact
+    # color each, differing only by solid-vs-dashed linetype, which
+    # was too subtle to tell apart at a glance (per direct feedback).
+    # Forecast variants now get a visibly lighter tint of the SAME
+    # hue -- still reads as "the same series" but observed vs.
+    # forecast no longer needs the linetype alone to tell apart. Grey/
+    # near-black swapped for a blue-grey pair (steel blue family) --
+    # plain grey and near-black read as "unstyled" rather than a
+    # deliberate color choice, and sat too close to the chart's own
+    # grey text/gridlines to register as a distinct series.
     series_colors <- c(
-      "Industry benchmark (observed)" = "grey55",
-      "Industry benchmark (forecast)" = "grey55",
-      "Your emissions (observed)"     = col,
-      "Your forecast"                 = col,
-      "Your stated goal"               = target_color,
-      "Interim goal (benchmark-anchored)" = target_color,
-      "SBTi-calculated goal"           = "#8E44AD",
+      "Industry emissions"            = "#4A6274",
+      "Industry emissions (forecast)" = "#A9BCC9",
+      "Emissions"                     = col,
+      "Emissions (forecast)"          = "#E59A8F",
+      "Your stated goal"               = "#8E44AD",
+      "Interim goal (benchmark-anchored)" = "#8E44AD",
+      "SBTi-calculated goal"           = "#27AE60",
       "Industry-calculated goal"       = "#F39C12"
     )
+    # DASHED RESERVED FOR "FORECAST" (per direct request) -- dashed now
+    # means, exclusively, "this segment is a projection" (Emissions
+    # (forecast), Industry emissions (forecast)); the three target/
+    # goal lines each get their own non-dashed pattern instead of
+    # SBTi previously also using "dashed", which blurred that signal.
+    # Per direct request: "Your stated goal" (purple) and "Industry-
+    # calculated goal" (yellow/orange) are always solid, regardless of
+    # whether they run into future years -- they're reference/target
+    # lines, not a forecast of what will actually happen, so dashed
+    # (which now means "forecast") doesn't apply to them.
     series_linetypes <- c(
-      "Industry benchmark (observed)" = "solid",
-      "Industry benchmark (forecast)" = "dashed",
-      "Your emissions (observed)"     = "solid",
-      "Your forecast"                 = "dashed",
-      "Your stated goal"               = "dotted",
-      "Interim goal (benchmark-anchored)" = "dotted",
-      "SBTi-calculated goal"           = "dashed",
-      "Industry-calculated goal"       = "dotdash"
+      "Industry emissions"            = "solid",
+      "Industry emissions (forecast)" = "dashed",
+      "Emissions"                     = "solid",
+      "Emissions (forecast)"          = "dashed",
+      "Your stated goal"               = "solid",
+      "Interim goal (benchmark-anchored)" = "solid",
+      "SBTi-calculated goal"           = "twodash",
+      "Industry-calculated goal"       = "solid"
     )
 
     # BUGFIX (was): linewidth and alpha were ALSO mapped as discrete
@@ -12550,96 +15790,186 @@ server <- function(input, output, session) {
     # labeled explicitly as illustrative in the subtitle rather than
     # implied to be a real statistical confidence interval.
     forecast_band_df <- if (identical(mode, "absolute")) {
-      plot_df %>% filter(series == "Your forecast") %>% mutate(ymin = value * 0.9, ymax = value * 1.1)
+      plot_df %>% filter(series == "Emissions (forecast)") %>% mutate(ymin = value * 0.9, ymax = value * 1.1)
     } else {
       NULL
     }
 
-    ggplot(plot_df, aes(x = year, y = value, color = series, linetype = series, group = series)) +
+    # VISUAL HIERARCHY -- "Emissions"/"Emissions (forecast)" is the
+    # line a viewer actually cares about; everything else is context.
+    # Bold linewidth for those two, thin for every other line, instead
+    # of every series competing at the same weight.
+    series_linewidths <- c(
+      "Industry emissions"            = 0.8,
+      "Industry emissions (forecast)" = 0.8,
+      "Emissions"                     = 1.9,
+      "Emissions (forecast)"          = 1.9,
+      "Your stated goal"               = 1.0,
+      "Interim goal (benchmark-anchored)" = 1.0,
+      "SBTi-calculated goal"           = 1.0,
+      "Industry-calculated goal"       = 1.0
+    )
+    # Anchor series only -- the ones a legend/label should ever name.
+    # "(forecast)" variants are deliberately excluded from both the
+    # end-of-line labels and the legend fallback below: they're the
+    # same color as their anchor, just lighter + dashed, and "dashed =
+    # forecast" is stated once in the subtitle instead of being its
+    # own repeated label.
+    anchor_series <- c("Industry emissions", "Emissions", "Your stated goal",
+                        "Interim goal (benchmark-anchored)", "SBTi-calculated goal",
+                        "Industry-calculated goal")
+
+    # "TODAY" REFERENCE -- the last year with real observed data (same
+    # set point_df already isolates), used to separate history from
+    # projection visually instead of leaving solid-vs-dashed as the
+    # only cue. Skipped if there's nothing observed yet to anchor to.
+    observed_last_year <- if (nrow(point_df) > 0) suppressWarnings(max(point_df$year, na.rm = TRUE)) else NA_real_
+    plot_max_year <- suppressWarnings(max(plot_df$year, na.rm = TRUE))
+    show_today_marker <- is.finite(observed_last_year) && is.finite(plot_max_year) && plot_max_year > observed_last_year
+
+    # "SO WHAT" CALLOUT -- the chart previously only showed lines, never
+    # stated the actual gap between where emissions are headed and the
+    # goal line, leaving the reader to eyeball it. Compares "Emissions"/
+    # "Emissions (forecast)" against the goal line at the latest year
+    # the two share, and only in absolute mode (a % gap needs its own
+    # separate framing this chart doesn't attempt yet).
+    gap_note <- ""
+    if (identical(mode, "absolute")) {
+      goal_years  <- plot_df$year[plot_df$series == target_label & !is.na(plot_df$value)]
+      emiss_years <- plot_df$year[plot_df$series %in% c("Emissions", "Emissions (forecast)") & !is.na(plot_df$value)]
+      common_year <- suppressWarnings(max(intersect(goal_years, emiss_years), na.rm = TRUE))
+      if (is.finite(common_year)) {
+        goal_val  <- plot_df$value[plot_df$series == target_label & plot_df$year == common_year][1]
+        emiss_val <- plot_df$value[plot_df$series %in% c("Emissions", "Emissions (forecast)") & plot_df$year == common_year][1]
+        if (!is.na(goal_val) && !is.na(emiss_val)) {
+          gap <- emiss_val - goal_val
+          gap_note <- paste0(
+            " -- ", if (gap > 0) "gap to goal in " else "ahead of goal in ", common_year,
+            ": ", comma(round(abs(gap))), " t"
+          )
+        }
+      }
+    }
+
+    # END-OF-LINE LABELS -- only the anchor series get labeled (see
+    # above); "(forecast)" segments are the same line continuing in a
+    # lighter shade, not a separately-named thing. Falls back to the
+    # legend when ggrepel isn't installed, also restricted to anchor
+    # series via `breaks` below.
+    label_df <- plot_df %>%
+      filter(!is.na(value), series %in% anchor_series) %>%
+      group_by(series) %>%
+      filter(year == max(year)) %>%
+      ungroup()
+
+    # PER DIRECT REQUEST -- solid alone wasn't enough to tell "Your
+    # stated goal" (purple) and "Industry-calculated goal" (yellow)
+    # apart from the plain solid Emissions/Industry emissions lines.
+    # These two now get an open circle marker at every point along
+    # their line (not just the last one, unlike point_df), so their
+    # solid line reads as visually distinct on its own.
+    circle_df <- plot_df %>% filter(series %in% c("Your stated goal", "Interim goal (benchmark-anchored)", "Industry-calculated goal"))
+
+    p <- ggplot(plot_df, aes(x = year, y = value, color = series, linetype = series, linewidth = series, group = series)) +
+      { if (show_today_marker) {
+          annotate("rect", xmin = observed_last_year, xmax = Inf, ymin = -Inf, ymax = Inf, fill = "grey50", alpha = 0.035)
+        } } +
       { if (!is.null(forecast_band_df) && nrow(forecast_band_df) > 0) {
           geom_ribbon(data = forecast_band_df, aes(x = year, ymin = ymin, ymax = ymax),
                       inherit.aes = FALSE, fill = col, alpha = 0.15)
         } } +
-      geom_line(linewidth = 1.1) +
-      geom_point(
-        data = point_df,
-        aes(x = year, y = value, color = series),
-        inherit.aes = FALSE, size = 1.8
+      { if (show_today_marker) {
+          geom_vline(xintercept = observed_last_year, color = "grey60", linewidth = 0.5, linetype = "22")
+        } } +
+      { if (show_today_marker) {
+          annotate("text", x = observed_last_year, y = Inf, label = "Today",
+                   vjust = 1.6, hjust = -0.15, size = 3.1, color = "grey45", fontface = "italic")
+        } } +
+      geom_line() +
+      geom_point(data = circle_df, shape = 21, fill = "white", stroke = 1.1, size = 2.1) +
+      geom_point(data = point_df, size = 1.8) +
+      scale_color_manual(values = series_colors, breaks = anchor_series, name = NULL) +
+      scale_linetype_manual(values = series_linetypes, breaks = anchor_series, name = NULL) +
+      scale_linewidth_manual(values = series_linewidths, breaks = anchor_series, name = NULL) +
+      scale_x_continuous(
+        breaks = scales::pretty_breaks(),
+        expand = expansion(mult = c(0.02, if (has_ggrepel) 0.22 else 0.02))
       ) +
-      scale_color_manual(values = series_colors, name = NULL) +
-      scale_linetype_manual(values = series_linetypes, name = NULL) +
-      scale_x_continuous(breaks = scales::pretty_breaks()) +
       scale_y_continuous(labels = if (identical(mode, "percent")) function(x) paste0(x, "%") else comma) +
       labs(
         title = if (nzchar(input$intake_company_name)) input$intake_company_name else "New Company",
+        # SIMPLIFIED (per direct request) -- previously stacked up to
+        # 5 methodology/caveat clauses; now just the sector, plus one
+        # short note that dashed = forecast (stated once here instead
+        # of via a separate "(forecast)" label on every such line).
         subtitle = paste0(
-          input$intake_sector, " -- ", scope_label,
-          if (scope_mult != 1 && !using_real_data) " (v1 estimate: Hertwich & Wood 2018 sector ratio, not measured)" else if (scope_mult != 1 && using_real_data) " (your real data; forecast borrows Scope 1's growth shape)" else "",
+          input$intake_sector,
           if (identical(mode, "percent")) " -- % change from each series' own starting year" else "",
-          if (!is.null(forecast_band_df) && nrow(forecast_band_df) > 0) " -- shaded band = illustrative +/-10% projection error margin" else ""
+          if (show_today_marker) " -- dashed = forecast" else "",
+          gap_note
         ),
         x = NULL, y = if (identical(mode, "percent")) "% change from baseline" else "Emissions (tCO2e)"
       ) +
-      theme_minimal(base_size = 14) +
-      theme(
-        plot.subtitle = element_text(color = "grey40", size = 11),
-        legend.position = "bottom",
-        legend.text = element_text(size = 10)
+      trend_chart_theme(base_size = 14, show_legend = !has_ggrepel)
+
+    if (has_ggrepel) {
+      p <- p + ggrepel::geom_text_repel(
+        data = label_df, aes(label = series), hjust = 0, direction = "y",
+        nudge_x = (plot_max_year - min(plot_df$year, na.rm = TRUE)) * 0.03 + 0.6,
+        xlim = c(plot_max_year, NA), segment.size = 0.3, segment.color = "grey70",
+        size = 3.3, fontface = "bold", show.legend = FALSE, seed = 42, box.padding = 0.25
       )
+    }
+
+    p
   }
 
   output$intake_plot <- renderPlot({
-    intake_calc_trigger()
-    isolate({
+    
       build_intake_trend_plot(scope_mult = 1, sbti_col = "scope1_emissions", scope_label = "Scope 1")
-    })
+    
   })
 
   output$intake_plot_pct <- renderPlot({
-    intake_calc_trigger()
-    isolate({
+    
       build_intake_trend_plot(scope_mult = 1, sbti_col = "scope1_emissions", scope_label = "Scope 1", mode = "percent")
-    })
+    
   })
 
   output$intake_plot_s2 <- renderPlot({
-    intake_calc_trigger()
-    isolate({
+    
       ratio <- get_scope23_ratio(input$intake_sector)
       req(!is.null(ratio))
       build_intake_trend_plot(scope_mult = ratio$scope2_multiplier, sbti_col = "scope2_emissions",
                                scope_label = "Scope 2", real_data_reactive = intake_user_data_s2)
-    })
+    
   })
 
   output$intake_plot_s2_pct <- renderPlot({
-    intake_calc_trigger()
-    isolate({
+    
       ratio <- get_scope23_ratio(input$intake_sector)
       req(!is.null(ratio))
       build_intake_trend_plot(scope_mult = ratio$scope2_multiplier, sbti_col = "scope2_emissions",
                                scope_label = "Scope 2", real_data_reactive = intake_user_data_s2, mode = "percent")
-    })
+    
   })
 
   output$intake_plot_s3 <- renderPlot({
-    intake_calc_trigger()
-    isolate({
+    
       ratio <- get_scope23_ratio(input$intake_sector)
       req(!is.null(ratio))
       build_intake_trend_plot(scope_mult = ratio$scope3_multiplier, sbti_col = "scope3_emissions",
                                scope_label = "Scope 3", real_data_reactive = intake_user_data_s3)
-    })
+    
   })
 
   output$intake_plot_s3_pct <- renderPlot({
-    intake_calc_trigger()
-    isolate({
+    
       ratio <- get_scope23_ratio(input$intake_sector)
       req(!is.null(ratio))
       build_intake_trend_plot(scope_mult = ratio$scope3_multiplier, sbti_col = "scope3_emissions",
                                scope_label = "Scope 3", real_data_reactive = intake_user_data_s3, mode = "percent")
-    })
+    
   })
 
   # BUGFIX (was): these were hardcoded h5("Scope 2 (v1 estimate)") /
@@ -12702,14 +16032,18 @@ server <- function(input, output, session) {
   })
 
   output$intake_table <- renderDT({
-    intake_calc_trigger()
-    isolate({
+    
+      # Scaled by facility count (see intake_benchmark_n_fac()) so this
+      # table's sector columns are directly comparable to your_data
+      # below, instead of silently mixing a per-facility median with a
+      # company-wide total in the same row.
+      n_fac <- intake_benchmark_n_fac()
       path <- intake_target_pathway() %>% transmute(year, target = round(target))
-      bm   <- intake_sector_benchmark() %>% transmute(year, sector_avg = round(avg_emissions))
+      bm   <- intake_sector_benchmark() %>% transmute(year, sector_avg = round(avg_emissions * n_fac))
       out  <- path %>% full_join(bm, by = "year") %>% arrange(year)
 
       sector_fc <- intake_sector_forecast_benchmark() %>%
-        transmute(year, sector_forecast = round(avg_p50))
+        transmute(year, sector_forecast = round(avg_p50 * n_fac))
       out <- out %>% full_join(sector_fc, by = "year") %>% arrange(year)
 
       if (isTRUE(input$intake_has_data == "yes") && !is.null(intake_user_data())) {
@@ -12724,7 +16058,7 @@ server <- function(input, output, session) {
       }
 
       datatable(out, options = list(pageLength = 15, dom = "tp"), rownames = FALSE)
-    })
+    
   })
 
   # Gap = forecast minus target. Uses the user's own scaled forecast when
@@ -13192,60 +16526,54 @@ server <- function(input, output, session) {
   }
 
   output$intake_level_bar_s1_plot <- renderPlot({
-    intake_calc_trigger()
-    isolate({
+    
       df <- tryCatch(intake_gap_multiscope(), error = function(e) NULL)
       req(!is.null(df), nrow(df) > 0)
       real_data <- if (isTRUE(input$intake_has_data == "yes")) intake_user_data() else NULL
       make_scope_level_bar_plot(df, "scope1_forecast", "scope1_target_own", "scope1_target_sbti", "scope1_target_industry", real_data)
-    })
+    
   })
 
   output$intake_level_bar_s2_plot <- renderPlot({
-    intake_calc_trigger()
-    isolate({
+    
       df <- tryCatch(intake_gap_multiscope(), error = function(e) NULL)
       req(!is.null(df), nrow(df) > 0)
       real_data <- tryCatch(intake_user_data_s2(), error = function(e) NULL)
       make_scope_level_bar_plot(df, "scope2_forecast", "scope2_target_own", "scope2_target_sbti", "scope2_target_industry", real_data)
-    })
+    
   })
 
   output$intake_level_bar_s3_plot <- renderPlot({
-    intake_calc_trigger()
-    isolate({
+    
       df <- tryCatch(intake_gap_multiscope(), error = function(e) NULL)
       req(!is.null(df), nrow(df) > 0)
       real_data <- tryCatch(intake_user_data_s3(), error = function(e) NULL)
       make_scope_level_bar_plot(df, "scope3_forecast", "scope3_target_own", "scope3_target_sbti", "scope3_target_industry", real_data)
-    })
+    
   })
 
   output$intake_gap_s1_plot <- renderPlot({
-    intake_calc_trigger()
-    isolate({
+    
       df <- tryCatch(intake_gap_multiscope(), error = function(e) NULL)
       req(!is.null(df), nrow(df) > 0)
       make_scope_gap_pair_plot(df, "gap1_own", "gap1_sbti", "gap1_industry")
-    })
+    
   })
 
   output$intake_gap_s2_plot <- renderPlot({
-    intake_calc_trigger()
-    isolate({
+    
       df <- tryCatch(intake_gap_multiscope(), error = function(e) NULL)
       req(!is.null(df), nrow(df) > 0)
       make_scope_gap_pair_plot(df, "gap2_own", "gap2_sbti", "gap2_industry")
-    })
+    
   })
 
   output$intake_gap_s3_plot <- renderPlot({
-    intake_calc_trigger()
-    isolate({
+    
       df <- tryCatch(intake_gap_multiscope(), error = function(e) NULL)
       req(!is.null(df), nrow(df) > 0)
       make_scope_gap_pair_plot(df, "gap3_own", "gap3_sbti", "gap3_industry")
-    })
+    
   })
 
   output$intake_gap_plot <- renderPlot({
@@ -14606,6 +17934,7 @@ server <- function(input, output, session) {
       catalog <- catalog %>% mutate(buyer_price = round(buyer_price * (1 - price_discount), 2))
     }
     catalog <- catalog %>% mutate(margin_per_ton = buyer_price - dev_cost)
+    catalog <- apply_geo_preference(catalog, input$pce_geo_mode, input$pce_geo_selection)
     w <- pme_weights()
 
     facility_country <- input$intake_facility_country
@@ -14938,7 +18267,8 @@ server <- function(input, output, session) {
   # Long-Term tabs, just fed a different allocation (pce_alloc() vs
   # pme_5yr_alloc()) so the map matches whichever portfolio is showing. ----
   build_facility_map_us <- function(alloc, facility_state, facility_county = NA_character_) {
-    us_states_map <- map_data("state")
+    # us_states_map is the top-level constant (computed once at app
+    # start, next to us_county_map_data) -- NOT recomputed here.
 
     # Per-county TOTAL funded tons (summed across all buckets) -- drives
     # the BUBBLE size only now (not a choropleth fill -- reverted per
@@ -15288,23 +18618,42 @@ server <- function(input, output, session) {
     # report back with specifics (what happened instead) rather than
     # assume is unfixable.
     tryCatch({
+      # BUGFIX: rotation/interval used to live in this closure alone, so
+      # every re-render (country change, Calculate, a slider -- anything
+      # that reruns this renderPlotly) started a NEW setInterval with no
+      # way to find and stop the PREVIOUS render's timer. Plotly reuses
+      # the same DOM element across re-renders, so those old intervals
+      # kept running forever, stacking up and all calling
+      # Plotly.relayout() on the same element at once -- competing
+      # writes to the rotation angle, which reads as exactly the
+      # "sometimes glitchy, not smooth" motion this was reported as.
+      # Storing the interval id (and a hover-bound flag) ON the element
+      # itself, rather than in the closure, lets each new render find
+      # and clear whatever the last render left running before starting
+      # its own -- so there's only ever one timer alive per globe.
       fig <- htmlwidgets::onRender(fig, "
         function(el, x) {
+          if (el._rotationInterval) { clearInterval(el._rotationInterval); el._rotationInterval = null; }
           var rotation = 0;
-          var interval = null;
           function startRotation() {
-            if (interval) return;
-            interval = setInterval(function() {
+            if (el._rotationInterval) return;
+            el._rotationInterval = setInterval(function() {
               rotation = (rotation + 0.3) % 360;
               Plotly.relayout(el, {'geo.projection.rotation.lon': rotation});
             }, 60);
           }
           function stopRotation() {
-            if (interval) { clearInterval(interval); interval = null; }
+            if (el._rotationInterval) { clearInterval(el._rotationInterval); el._rotationInterval = null; }
           }
           startRotation();
-          el.on('plotly_hover', function(data) { stopRotation(); });
-          el.on('plotly_unhover', function(data) { startRotation(); });
+          // Guard against re-binding a second pair of hover/unhover
+          // listeners on top of a previous render's -- same stacking
+          // problem as the interval, just for event listeners instead.
+          if (!el._rotationHoverBound) {
+            el._rotationHoverBound = true;
+            el.on('plotly_hover', function(data) { stopRotation(); });
+            el.on('plotly_unhover', function(data) { startRotation(); });
+          }
         }
       ")
     }, error = function(e) {
