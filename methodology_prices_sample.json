@@ -1,0 +1,11 @@
+{
+  "prices": {
+    "VM0048": { "price": 145, "supply_tons": 850000 },
+    "VM0044": { "price": 118 },
+    "Isometric-DAC": { "price": 610, "supply_tons": 45000 },
+    "ACM0001": null,
+    "ACM0002": null,
+    "VM0007": null,
+    "VM0009": null
+  }
+}

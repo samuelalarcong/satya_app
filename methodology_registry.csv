@@ -1,0 +1,59 @@
+methodology_code,registry_family,family_label,title_short,is_tool,mechanism,action,bucket_key,confidence,notes
+ACM0001,ACM,CDM Consolidated,Landfill gas flaring/use,FALSE,Technology-based,Avoidance,tech_avoid,High,
+ACM0002,ACM,CDM Consolidated,Grid-connected renewable electricity,FALSE,Technology-based,Avoidance,tech_avoid,High,
+ACM0006,ACM,CDM Consolidated,Electricity/heat from biomass,FALSE,Technology-based,Avoidance,tech_avoid,High,
+ACM0008,ACM,CDM Consolidated,Coal mine/coal bed methane abatement,FALSE,Technology-based,Avoidance,tech_avoid,High,
+ACM0018,ACM,CDM Consolidated,Biomass residues power-only plants,FALSE,Technology-based,Avoidance,tech_avoid,High,
+AM0001,AM,CDM Large-scale,Landfill gas flaring/use (legacy),FALSE,Technology-based,Avoidance,tech_avoid,High,
+AM0021,AM,CDM Large-scale,N2O destruction - adipic acid,FALSE,Technology-based,Avoidance,tech_avoid,Medium,verify current scope vs AM0028
+AM0023,AM,CDM Large-scale,Gas pipeline leak reduction,FALSE,Technology-based,Avoidance,tech_avoid,Medium,
+AM0028,AM,CDM Large-scale,Catalytic N2O destruction - nitric acid,FALSE,Technology-based,Avoidance,tech_avoid,High,
+AM0034,AM,CDM Large-scale,Catalytic N2O reduction - ammonia,FALSE,Technology-based,Avoidance,tech_avoid,Medium,
+AM0036,AM,CDM Large-scale,Fossil-to-biomass fuel switch (power),FALSE,Technology-based,Avoidance,tech_avoid,Medium,
+AM0072,AM,CDM Large-scale,Coal/petcoke-to-gas fuel switch,FALSE,Technology-based,Avoidance,tech_avoid,Medium,
+AMS-I.A,AMS,CDM Small-scale,Household renewable electricity,FALSE,Community-based,Avoidance,comm_avoid,Medium,off-grid/household scale
+AMS-I.D,AMS,CDM Small-scale,Grid-connected renewable electricity (SSC),FALSE,Technology-based,Avoidance,tech_avoid,Medium,
+AMS-I.L,AMS,CDM Small-scale,Rural electrification - renewables,FALSE,Community-based,Avoidance,comm_avoid,Medium,
+AMS-II.C,AMS,CDM Small-scale,Demand-side energy efficiency,FALSE,Technology-based,Avoidance,tech_avoid,Medium,
+AMS-II.D,AMS,CDM Small-scale,Industrial energy efficiency,FALSE,Technology-based,Avoidance,tech_avoid,Medium,
+AMS-II.E,AMS,CDM Small-scale,Building energy efficiency,FALSE,Technology-based,Avoidance,tech_avoid,Medium,could be comm_avoid if residential-only
+AMS-III.B,AMS,CDM Small-scale,Fuel switching (SSC),FALSE,Technology-based,Avoidance,tech_avoid,Medium,
+AMS-III.BK,AMS,CDM Small-scale,Biochar production (SSC),FALSE,Technology-based,Removal,tech_removal,Low,verify current AMS-III.BK scope
+AMS-III.D,AMS,CDM Small-scale,Manure management methane recovery,FALSE,Technology-based,Avoidance,tech_avoid,Medium,
+AMS-III.E,AMS,CDM Small-scale,Avoided methane - biomass decay/composting,FALSE,Technology-based,Avoidance,tech_avoid,Medium,
+AMS-III.F,AMS,CDM Small-scale,Avoided methane - solid waste composting,FALSE,Technology-based,Avoidance,tech_avoid,Medium,
+AR-ACM0003,AR,CDM A/R,Afforestation/reforestation on degraded land,FALSE,Nature-based,Removal,nat_removal,High,
+AR-TOOL14,AR,CDM A/R,A/R significance-of-emissions tool,TRUE,Nature-based,Removal,nat_removal,Medium,supporting tool not a standalone credit source
+AR-TOOL15,AR,CDM A/R,A/R additionality demonstration tool,TRUE,Nature-based,Removal,nat_removal,Medium,supporting tool not a standalone credit source
+AR-TOOL19,AR,CDM A/R,A/R soil organic carbon estimation tool,TRUE,Nature-based,Removal,nat_removal,Medium,supporting tool not a standalone credit source
+TOOL01,TOOL,CDM Tools,Universal baseline/additionality tool,TRUE,Cross-cutting,NA,tool,High,universal - NULL-methodology block per Rajat
+TOOL02,TOOL,CDM Tools,Universal baseline-scenario tool,TRUE,Cross-cutting,NA,tool,High,universal - NULL-methodology block per Rajat
+TOOL03,TOOL,CDM Tools,Grid/electricity-consumption emission-factor tool,TRUE,Cross-cutting,NA,tool,Medium,
+TOOL04,TOOL,CDM Tools,Solid-waste CH4 emission-factor tool,TRUE,Cross-cutting,NA,tool,Medium,
+TOOL07,TOOL,CDM Tools,Fossil-fuel baseline/leakage tool,TRUE,Cross-cutting,NA,tool,Medium,
+VM0003,VM,Verra VCS,Improved Forest Management,FALSE,Nature-based,Avoidance,nat_avoid,High,kept consistent with existing catalog's IFM row
+VM0006,VM,Verra VCS,Mosaic/landscape REDD carbon accounting,FALSE,Nature-based,Avoidance,nat_avoid,Medium,
+VM0007,VM,Verra VCS,REDD+ Methodology Framework,FALSE,Nature-based,Avoidance,nat_avoid,High,
+VM0009,VM,Verra VCS,Avoided Ecosystem Conversion,FALSE,Nature-based,Avoidance,nat_avoid,High,
+VM0015,VM,Verra VCS,Avoided Unplanned Deforestation,FALSE,Nature-based,Avoidance,nat_avoid,High,
+VM0032,VM,Verra VCS,Grassland/livestock management,FALSE,Nature-based,Avoidance,nat_avoid,Low,verify exact scope
+VM0033,VM,Verra VCS,Tidal wetland & seagrass restoration,FALSE,Nature-based,Removal,nat_removal,High,blue carbon
+VM0035,VM,Verra VCS,IFM - extended rotation age,FALSE,Nature-based,Removal,nat_removal,Medium,
+VM0037,VM,Verra VCS,Large-scale avoided forest conversion,FALSE,Nature-based,Avoidance,nat_avoid,Low,verify exact scope
+VM0041,VM,Verra VCS,Enteric methane reduction (livestock),FALSE,Technology-based,Avoidance,tech_avoid,Medium,feed-additive style intervention
+VM0042,VM,Verra VCS,Improved agricultural land mgmt (soil carbon),FALSE,Nature-based,Removal,nat_removal,High,
+VM0044,VM,Verra VCS,Biochar utilization (soil/non-soil),FALSE,Technology-based,Removal,tech_removal,High,
+VM0045,VM,Verra VCS,IFM - alternative silviculture,FALSE,Nature-based,Removal,nat_removal,Medium,
+VM0047,VM,Verra VCS,Afforestation/Reforestation/Revegetation,FALSE,Nature-based,Removal,nat_removal,High,
+VM0048,VM,Verra VCS,Coastal wetland creation/restoration,FALSE,Nature-based,Removal,nat_removal,High,blue carbon
+VM0049,VM,Verra VCS,Peatland restoration/conservation,FALSE,Nature-based,Avoidance,nat_avoid,Low,verify exact scope
+VM0050,VM,Verra VCS,Reduced-impact logging,FALSE,Nature-based,Avoidance,nat_avoid,Low,verify exact scope
+VMD0037,VMD,Verra Module,Improved cookstoves module,FALSE,Community-based,Avoidance,comm_avoid,Medium,
+VMD0055,VMD,Verra Module,Module - needs registry lookup,FALSE,Community-based,Avoidance,comm_avoid,Low,verify exact scope
+VMD0057,VMD,Verra Module,Module - needs registry lookup,FALSE,Technology-based,Avoidance,tech_avoid,Low,verify exact scope
+Puro-Biochar,PURO,Puro.earth,Biochar carbon removal,FALSE,Technology-based,Removal,tech_removal,High,
+Puro-GSC,PURO,Puro.earth,Geologically stored carbon,FALSE,Technology-based,Removal,tech_removal,High,mineralization/storage pathway
+Isometric-DAC,ISO,Isometric,Direct Air Capture,FALSE,Technology-based,Removal,tech_removal,High,
+Isometric-ERW,ISO,Isometric,Enhanced Rock Weathering,FALSE,Technology-based,Removal,tech_removal,High,
+Isometric-OAE,ISO,Isometric,Ocean Alkalinity Enhancement,FALSE,Technology-based,Removal,tech_removal,High,
+Carbon-Direct,OTHER,Other,Unclassified / needs definition,FALSE,Other,Other,other,Low,Carbon Direct is a known advisory firm name not a methodology - confirm what this row actually refers to
