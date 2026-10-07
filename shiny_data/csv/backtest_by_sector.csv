@@ -1,0 +1,15 @@
+primary_sector,mdape,n_facilities,confidence
+Industrial Gas Suppliers,4.8,1,High
+Petroleum Product Suppliers,7.7,68,High
+Chemicals,9.7,375,High
+Refineries,9.8,5,High
+Minerals,9.9,329,High
+Other,10.4,946,Medium
+Pulp and Paper,11.9,183,Medium
+Metals,12.1,234,Medium
+Waste,18.4,1088,Medium
+Injection of CO2,19,14,Medium
+Natural Gas and Natural Gas Liquids Suppliers,19.2,60,Medium
+Petroleum and Natural Gas Systems,21.7,562,Low
+Power Plants,24.3,1088,Low
+Import and Export of Equipment Containing Fluorintaed GHGs,35.9,6,Low
